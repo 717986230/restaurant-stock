@@ -16,8 +16,7 @@
     {
       "binding": "DB",
       "database_name": "restaurant-stock",
-      // 执行 `wrangler d1 create restaurant-stock` 后把返回的 id 填到这里
-      "database_id": "PLACEHOLDER_REPLACE_AFTER_D1_CREATE",
+      "database_id": "a9be14a3-f408-47bc-8f04-6f23b51a60e8",
       "migrations_dir": "migrations"
     }
   ],
