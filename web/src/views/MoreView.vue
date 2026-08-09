@@ -61,7 +61,7 @@ async function copyShoppingList() {
     </div>
 
     <p class="muted small foot">
-      后厨库存 · 数据存在 Cloudflare D1，网页版免安装。<br />
+      门店库存 · 数据存在 Cloudflare D1，网页版免安装。<br />
       在手机浏览器里选「添加到主屏幕」，用起来跟 App 一样。
     </p>
   </main>

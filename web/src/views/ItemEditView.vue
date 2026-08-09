@@ -11,14 +11,15 @@ const isNew = computed(() => id === null);
 
 const name = ref('');
 const category = ref('');
-const unit = ref('斤');
+const unit = ref('箱');
 const minStock = ref('0');
 const note = ref('');
 const categories = ref<string[]>([]);
 const saving = ref(false);
 const loading = ref(!!id);
 
-const UNITS = ['斤', '公斤', '克', '个', '只', '把', '袋', '箱', '瓶', '桶', '盒', '块', '提', '捆', '份'];
+// 常用的排前面：外卖店进货以箱、捆、包、卷为主，重量单位反而少用
+const UNITS = ['箱', '捆', '包', '卷', '提', '盒', '袋', '瓶', '听', '桶', '个', '条', '打', '份', '斤', '公斤', '克'];
 
 onMounted(async () => {
   try {
@@ -53,7 +54,7 @@ async function save() {
   const body = {
     name: name.value.trim(),
     category: category.value.trim() || '其他',
-    unit: unit.value.trim() || '斤',
+    unit: unit.value.trim() || '箱',
     minStock: Number(minStock.value) || 0,
     note: note.value.trim() || null,
   };
@@ -88,12 +89,12 @@ async function save() {
   <main v-else class="page">
     <label class="field">
       <span>货品名称</span>
-      <input v-model="name" class="input" placeholder="比如：五花肉" />
+      <input v-model="name" class="input" placeholder="比如：外卖盒 大" />
     </label>
 
     <label class="field">
       <span>分类</span>
-      <input v-model="category" class="input" list="category-options" placeholder="肉类 / 蔬菜 / 调料…" />
+      <input v-model="category" class="input" list="category-options" placeholder="包装耗材 / 酒水 / 饮料…" />
       <datalist id="category-options">
         <option v-for="c in categories" :key="c" :value="c" />
       </datalist>
@@ -114,7 +115,7 @@ async function save() {
 
     <label class="field">
       <span>备注（可不填）</span>
-      <textarea v-model="note" class="input" rows="2" placeholder="常用供应商、存放位置…"></textarea>
+      <textarea v-model="note" class="input" rows="2" placeholder="常用供应商、规格、存放位置…"></textarea>
     </label>
 
     <button class="btn btn-primary btn-block" :disabled="saving" @click="save">

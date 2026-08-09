@@ -3,7 +3,7 @@ create table items (
     id         integer primary key autoincrement,
     name       text    not null unique,
     category   text    not null default '其他',
-    unit       text    not null default '斤',
+    unit       text    not null default '箱',
     min_stock  real    not null default 0,  -- 低库存阈值：结存 <= 该值时列表标红
     last_price real,                        -- 最近一次进价
     has_image  integer not null default 0,  -- 是否已上传图片，避免列表查询去碰 blob 表

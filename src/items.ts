@@ -60,7 +60,7 @@ items.post('/', async (c) => {
   const body = await c.req.json<Record<string, unknown>>();
   const name = requireText(body.name, '货品名称', 80);
   const category = optionalText(body.category, 40) ?? '其他';
-  const unit = optionalText(body.unit, 16) ?? '斤';
+  const unit = optionalText(body.unit, 16) ?? '箱';
   const minStock = body.minStock === undefined ? 0 : requireNumber(body.minStock, '低库存阈值', { min: 0 });
   const note = optionalText(body.note, 255);
 
@@ -91,7 +91,7 @@ items.put('/:id', async (c) => {
   const body = await c.req.json<Record<string, unknown>>();
   const name = requireText(body.name, '货品名称', 80);
   const category = optionalText(body.category, 40) ?? '其他';
-  const unit = optionalText(body.unit, 16) ?? '斤';
+  const unit = optionalText(body.unit, 16) ?? '箱';
   const minStock = requireNumber(body.minStock ?? 0, '低库存阈值', { min: 0 });
   const note = optionalText(body.note, 255);
 

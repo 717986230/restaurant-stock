@@ -48,7 +48,7 @@ watch(q, () => {
 });
 watch([category, onlyLow], load);
 
-// 按分类分组，后厨找东西是按"肉类/蔬菜"找的，不是按拼音找的
+// 按分类分组：找东西是按"包装耗材/酒水/饮料"找的，不是按拼音找的
 const groups = computed(() => {
   const map = new Map<string, Item[]>();
   for (const it of list.value) {
@@ -67,7 +67,7 @@ function openSheet(item: Item, kind: MoveKind) {
 
 <template>
   <header class="app-bar">
-    <h1>📦 后厨库存</h1>
+    <h1>📦 门店库存</h1>
     <div v-if="summary" class="stats">
       <span>共 {{ summary.items }} 项</span>
       <span v-if="summary.out" class="bad">用光 {{ summary.out }}</span>
@@ -109,7 +109,7 @@ function openSheet(item: Item, kind: MoveKind) {
           <RouterLink :to="`/items/${it.id}`" class="main">
             <div class="thumb">
               <img v-if="it.hasImage" :src="`/api/items/${it.id}/image`" :alt="it.name" loading="lazy" />
-              <span v-else>🍽</span>
+              <span v-else>📦</span>
             </div>
             <div class="info">
               <div class="name">
