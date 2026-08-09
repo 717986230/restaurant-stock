@@ -47,13 +47,19 @@ export interface Summary {
   todayCheck: number;
 }
 
-/** 会话失效时置为 true，App 会盖上锁屏；任何一个接口 401 都会触发 */
-export const locked = ref(false);
+export interface User {
+  id: number;
+  username: string;
+  displayName: string;
+}
+
+/** null 表示没登录，App 会盖上登录页；任何一个接口 401 都会把它清掉 */
+export const currentUser = ref<User | null>(null);
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api${path}`, init);
   if (!res.ok) {
-    if (res.status === 401 && path !== '/login') locked.value = true;
+    if (res.status === 401 && path !== '/login' && path !== '/register') currentUser.value = null;
     let message = `请求失败（${res.status}）`;
     try {
       const body = (await res.json()) as { error?: string };
@@ -74,14 +80,21 @@ export function today(): string {
 }
 
 export const api = {
-  session() {
-    return request<{ ok: boolean; configured: boolean }>('/session');
+  me() {
+    return request<{ ok: boolean; user?: User }>('/me');
   },
-  login(pin: string) {
-    return request<{ ok: true }>('/login', {
+  register(username: string, key: string) {
+    return request<{ ok: true; user: User; seeded: number }>('/register', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ pin }),
+      body: JSON.stringify({ username, key }),
+    });
+  },
+  login(username: string, key: string) {
+    return request<{ ok: true; user: User }>('/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ username, key }),
     });
   },
   logout() {

@@ -1,9 +1,9 @@
 <script setup lang="ts">
 import { RouterLink, RouterView, useRoute } from 'vue-router';
 import { computed, onMounted, ref } from 'vue';
-import { api, locked } from './api';
+import { api, currentUser } from './api';
 import { toastState } from './toast';
-import LockScreen from './components/LockScreen.vue';
+import AuthView from './views/AuthView.vue';
 
 const route = useRoute();
 const ready = ref(false);
@@ -18,26 +18,26 @@ const tabs = [
 // 详情页/编辑页属于「库存」这条线，底部要保持在库存上高亮
 const activeTab = computed(() => (route.path.startsWith('/items') ? '/' : route.path));
 
-// 先问一句还认不认得这台手机，免得页面先闪一下内容再被锁屏盖住
+// 先问一句还认不认得这台手机，免得页面先闪一下内容再被登录页盖住
 onMounted(async () => {
   try {
-    const s = await api.session();
-    locked.value = !s.ok;
+    const res = await api.me();
+    currentUser.value = res.ok && res.user ? res.user : null;
   } catch {
-    locked.value = true;
+    currentUser.value = null;
   } finally {
     ready.value = true;
   }
 });
 
-function onUnlocked() {
+function onAuthed() {
   // 各个页面的数据都是在挂载时拉的，整页刷新最省事也最不容易漏
-  location.reload();
+  location.replace('/');
 }
 </script>
 
 <template>
-  <LockScreen v-if="ready && locked" @unlocked="onUnlocked" />
+  <AuthView v-if="ready && !currentUser" @done="onAuthed" />
 
   <template v-else-if="ready">
     <RouterView v-slot="{ Component }">

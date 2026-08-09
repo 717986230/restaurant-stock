@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
 import { RouterLink } from 'vue-router';
-import { api, fmt, locked, today, type Item } from '@/api';
+import { api, currentUser, fmt, today, type Item } from '@/api';
 import { toastError } from '@/toast';
 
 const alerts = ref<Item[]>([]);
@@ -18,13 +18,13 @@ onMounted(async () => {
 });
 
 async function logout() {
-  if (!confirm('退出登录？下次打开要重新输 PIN。')) return;
+  if (!confirm('退出登录？下次打开要重新输账号密码。')) return;
   try {
     await api.logout();
   } catch (e) {
     toastError(e);
   } finally {
-    locked.value = true;
+    currentUser.value = null;
   }
 }
 
@@ -73,7 +73,11 @@ async function copyShoppingList() {
 
     <h2 class="sec">账号</h2>
     <div class="links">
-      <button class="link logout" @click="logout">🔒 退出登录（这台手机需要重新输 PIN）</button>
+      <div class="link who">
+        👤 当前账号：<strong>{{ currentUser?.displayName }}</strong>
+        <span class="muted small">　你的数据只有这个账号看得到</span>
+      </div>
+      <button class="link logout" @click="logout">🔒 退出登录</button>
     </div>
 
     <p class="muted small foot">
@@ -165,6 +169,10 @@ async function copyShoppingList() {
 
 .link:last-child {
   border-bottom: none;
+}
+
+.who {
+  line-height: 1.6;
 }
 
 .logout {

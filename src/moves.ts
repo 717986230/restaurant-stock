@@ -6,11 +6,11 @@ import {
   requireNumber,
   round3,
   statusOf,
-  type Env,
+  type AppEnv,
   type MoveKind,
 } from './types';
 
-export const moves = new Hono<{ Bindings: Env }>();
+export const moves = new Hono<AppEnv>();
 
 interface MoveRow {
   id: number;
@@ -44,10 +44,10 @@ function toMoveDto(r: MoveRow) {
   };
 }
 
-async function currentStock(db: D1Database, itemId: number): Promise<number> {
+async function currentStock(db: D1Database, userId: number, itemId: number): Promise<number> {
   const row = await db
-    .prepare('select coalesce(sum(qty), 0) as stock from stock_moves where item_id = ?')
-    .bind(itemId)
+    .prepare('select coalesce(sum(qty), 0) as stock from stock_moves where user_id = ? and item_id = ?')
+    .bind(userId, itemId)
     .first<{ stock: number }>();
   return round3(row?.stock ?? 0);
 }
@@ -63,8 +63,8 @@ moves.get('/', async (c) => {
   const day = c.req.query('day');
   const limit = Math.min(Number(c.req.query('limit') ?? 100) || 100, 500);
 
-  const where: string[] = [];
-  const binds: unknown[] = [];
+  const where: string[] = ['m.user_id = ?'];
+  const binds: unknown[] = [c.var.userId];
   if (itemId) {
     where.push('m.item_id = ?');
     binds.push(Number(itemId));
@@ -74,7 +74,7 @@ moves.get('/', async (c) => {
     binds.push(day);
   }
 
-  const sql = `${MOVE_SELECT} ${where.length ? `where ${where.join(' and ')}` : ''} order by m.id desc limit ?`;
+  const sql = `${MOVE_SELECT} where ${where.join(' and ')} order by m.id desc limit ?`;
   const { results } = await c.env.DB.prepare(sql)
     .bind(...binds, limit)
     .all<MoveRow>();
@@ -93,8 +93,8 @@ moves.post('/', async (c) => {
   const kind = body.kind as MoveKind;
   if (kind !== 'IN' && kind !== 'OUT' && kind !== 'CHECK') throw new ApiError(400, '未知的操作类型');
 
-  const item = await c.env.DB.prepare('select id, name, unit, min_stock from items where id = ? and archived = 0')
-    .bind(itemId)
+  const item = await c.env.DB.prepare('select id, name, unit, min_stock from items where id = ? and user_id = ? and archived = 0')
+    .bind(itemId, c.var.userId)
     .first<{ id: number; name: string; unit: string; min_stock: number }>();
   if (!item) throw new ApiError(404, '货品不存在');
 
@@ -108,7 +108,7 @@ moves.post('/', async (c) => {
 
   if (kind === 'CHECK') {
     countedQty = requireNumber(body.countedQty, '实际数量', { min: 0 });
-    qty = round3(countedQty - (await currentStock(c.env.DB, itemId)));
+    qty = round3(countedQty - (await currentStock(c.env.DB, c.var.userId, itemId)));
   } else {
     const raw = requireNumber(body.qty, '数量', { min: 0.001 });
     qty = kind === 'IN' ? round3(raw) : round3(-raw);
@@ -119,16 +119,16 @@ moves.post('/', async (c) => {
 
   const statements = [
     c.env.DB.prepare(
-      `insert into stock_moves (item_id, kind, qty, unit_price, counted_qty, note, operator, day)
-       values (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(itemId, kind, qty, unitPrice, countedQty, note, operator, day),
+      `insert into stock_moves (user_id, item_id, kind, qty, unit_price, counted_qty, note, operator, day)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(c.var.userId, itemId, kind, qty, unitPrice, countedQty, note, operator, day),
   ];
   if (unitPrice !== null) {
-    statements.push(c.env.DB.prepare('update items set last_price = ? where id = ?').bind(unitPrice, itemId));
+    statements.push(c.env.DB.prepare('update items set last_price = ? where id = ? and user_id = ?').bind(unitPrice, itemId, c.var.userId));
   }
   await c.env.DB.batch(statements);
 
-  const stock = await currentStock(c.env.DB, itemId);
+  const stock = await currentStock(c.env.DB, c.var.userId, itemId);
   return c.json(
     {
       ok: true,
@@ -144,7 +144,7 @@ moves.post('/', async (c) => {
 /** 撤销误操作。流水删掉后结存自动回到删之前的样子，不需要再补一笔冲销。 */
 moves.delete('/:id', async (c) => {
   const id = Number(c.req.param('id'));
-  const res = await c.env.DB.prepare('delete from stock_moves where id = ?').bind(id).run();
+  const res = await c.env.DB.prepare('delete from stock_moves where id = ? and user_id = ?').bind(id, c.var.userId).run();
   if (res.meta.changes === 0) throw new ApiError(404, '这条记录不存在');
   return c.json({ ok: true });
 });

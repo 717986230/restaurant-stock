@@ -2,9 +2,9 @@ import { Hono } from 'hono';
 import { registerAuthRoutes, requireAuth } from './auth';
 import { items } from './items';
 import { moves } from './moves';
-import { ApiError, normalizeDay, round3, statusOf, toItemDto, type Env, type ItemRow } from './types';
+import { ApiError, normalizeDay, round3, statusOf, toItemDto, type AppEnv, type ItemRow } from './types';
 
-const app = new Hono<{ Bindings: Env }>();
+const app = new Hono<AppEnv>();
 
 // 放在所有业务路由之前：漏掉一条路由就等于漏掉一道门
 app.use('/api/*', requireAuth);
@@ -21,11 +21,11 @@ app.get('/api/summary', async (c) => {
     c.env.DB.prepare(
       `select i.min_stock,
               coalesce((select sum(m.qty) from stock_moves m where m.item_id = i.id), 0) as stock
-       from items i where i.archived = 0`,
-    ).all<{ min_stock: number; stock: number }>(),
+       from items i where i.user_id = ? and i.archived = 0`,
+    ).bind(c.var.userId).all<{ min_stock: number; stock: number }>(),
     c.env.DB.prepare(
-      `select kind, count(*) as n from stock_moves where day = ? group by kind`,
-    ).bind(day).all<{ kind: string; n: number }>(),
+      `select kind, count(*) as n from stock_moves where user_id = ? and day = ? group by kind`,
+    ).bind(c.var.userId, day).all<{ kind: string; n: number }>(),
   ]);
 
   let low = 0;
@@ -55,8 +55,8 @@ app.get('/api/export.csv', async (c) => {
     `select i.id, i.name, i.category, i.unit, i.pack_size, i.pack_unit,
             i.min_stock, i.last_price, i.has_image, i.note,
             coalesce((select sum(m.qty) from stock_moves m where m.item_id = i.id), 0) as stock
-     from items i where i.archived = 0 order by i.category, i.name`,
-  ).all<ItemRow>();
+     from items i where i.user_id = ? and i.archived = 0 order by i.category, i.name`,
+  ).bind(c.var.userId).all<ItemRow>();
 
   const label = { OUT: '已用光', LOW: '偏低', OK: '正常' } as const;
   const header = ['分类', '货品', '单位', '当前结存', '折合整箱', '整箱规格', '低库存阈值', '状态', '最近进价', '备注'];

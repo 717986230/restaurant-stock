@@ -1,16 +1,33 @@
-import type { MiddlewareHandler } from 'hono';
+import type { Hono, MiddlewareHandler } from 'hono';
 import { deleteCookie, getCookie, setCookie } from 'hono/cookie';
-import { ApiError, type Env } from './types';
+import { SEED_ITEMS } from './seed';
+import { ApiError, type AppEnv, type Env } from './types';
 
 const COOKIE_NAME = 'rs_session';
-/** 90 天免登录：后厨的手机不该每天都来一遍 PIN */
+/** 90 天免登录：后厨的手机不该每天都来一遍密码 */
 const SESSION_DAYS = 90;
 
-/** 连错这么多次就锁一段时间。6 位 PIN 共 100 万种，配上锁定基本猜不动。 */
-const MAX_FAILS = 5;
+/**
+ * 服务端这一层迭代次数不高，是被免费版 Workers「每请求 10ms CPU」卡住的。
+ * 真正的强度放在手机上做（见 web/src/crypto.ts，60 万次迭代），
+ * 服务端收到的已经是派生结果而不是明文密码，两层加起来 62 万次，
+ * 攻击者就算拖走整个库，每猜一次密码也要付这么多算力。
+ */
+const SERVER_ITERATIONS = 20_000;
+
+/** 连错这么多次就锁一段时间 */
+const MAX_FAILS = 8;
 const BLOCK_MINUTES = 10;
 
 const encoder = new TextEncoder();
+
+function toHex(buf: ArrayBuffer): string {
+  return [...new Uint8Array(buf)].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+
+function randomHex(bytes: number): string {
+  return toHex(crypto.getRandomValues(new Uint8Array(bytes)).buffer);
+}
 
 /** 逐字节比较，耗时与"错在第几位"无关，不给旁路计时留线索 */
 function timingSafeEqual(a: string, b: string): boolean {
@@ -22,110 +39,212 @@ function timingSafeEqual(a: string, b: string): boolean {
   return diff === 0;
 }
 
-async function sign(pin: string, payload: string): Promise<string> {
-  const key = await crypto.subtle.importKey('raw', encoder.encode(pin), { name: 'HMAC', hash: 'SHA-256' }, false, [
-    'sign',
-  ]);
-  const sig = await crypto.subtle.sign('HMAC', key, encoder.encode(payload));
-  return [...new Uint8Array(sig)].map((b) => b.toString(16).padStart(2, '0')).join('');
+async function derive(clientKey: string, salt: string, iterations: number): Promise<string> {
+  const key = await crypto.subtle.importKey('raw', encoder.encode(clientKey), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt: encoder.encode(salt), iterations, hash: 'SHA-256' },
+    key,
+    256,
+  );
+  return toHex(bits);
 }
 
-/**
- * 会话令牌是「过期时间 + 用 PIN 签的名」，服务端不存任何会话记录。
- * 副作用正好是想要的：改了 PIN，所有旧手机上的登录状态立刻失效。
- */
-async function issueToken(pin: string): Promise<string> {
-  const exp = String(Date.now() + SESSION_DAYS * 86400_000);
-  return `${exp}.${await sign(pin, exp)}`;
-}
-
-async function tokenValid(pin: string, token: string | undefined): Promise<boolean> {
-  if (!token) return false;
-  const dot = token.indexOf('.');
-  if (dot < 0) return false;
-  const exp = token.slice(0, dot);
-  if (!/^\d+$/.test(exp) || Number(exp) < Date.now()) return false;
-  return timingSafeEqual(token.slice(dot + 1), await sign(pin, exp));
-}
-
-function requirePin(env: Env): string {
-  const pin = env.APP_PIN;
-  // 宁可整站报错，也不能因为忘了配密码就悄悄变成谁都能进
-  if (!pin) throw new ApiError(500, '服务端还没有设置 APP_PIN，请先执行 wrangler secret put APP_PIN');
-  return pin;
+async function sha256Hex(value: string): Promise<string> {
+  return toHex(await crypto.subtle.digest('SHA-256', encoder.encode(value)));
 }
 
 function clientIp(c: { req: { header: (k: string) => string | undefined } }): string {
   return c.req.header('cf-connecting-ip') ?? 'unknown';
 }
 
-/** 登录、退出之外的所有接口都要带上有效 Cookie */
-export const requireAuth: MiddlewareHandler<{ Bindings: Env }> = async (c, next) => {
-  const path = new URL(c.req.url).pathname;
-  if (path === '/api/login' || path === '/api/logout' || path === '/api/session') return next();
+function sessionCookieOptions(url: string) {
+  return {
+    httpOnly: true,
+    // 本地 http://localhost 调试时不能带 Secure，否则浏览器直接丢弃
+    secure: new URL(url).protocol === 'https:',
+    sameSite: 'Lax' as const,
+    path: '/',
+    maxAge: SESSION_DAYS * 86400,
+  };
+}
 
-  const pin = requirePin(c.env);
-  if (!(await tokenValid(pin, getCookie(c, COOKIE_NAME)))) {
-    throw new ApiError(401, '请先输入 PIN');
+/**
+ * 手机发过来的是 PBKDF2 派生结果（64 位十六进制），不是明文密码。
+ * 这里校验格式，顺带挡住"直接把明文当 key 发过来"的坏客户端。
+ */
+function requireClientKey(value: unknown): string {
+  if (typeof value !== 'string' || !/^[0-9a-f]{64}$/.test(value)) {
+    throw new ApiError(400, '密码格式不对，请在本应用页面内登录');
   }
+  return value;
+}
+
+function requireUsername(value: unknown): string {
+  const raw = typeof value === 'string' ? value.trim() : '';
+  if (!/^[a-zA-Z0-9_一-龥]{2,20}$/.test(raw)) {
+    throw new ApiError(400, '用户名 2-20 位，只能用中文、字母、数字和下划线');
+  }
+  return raw;
+}
+
+async function throttle(c: { env: Env; req: { header: (k: string) => string | undefined } }) {
+  const ip = clientIp(c);
+  const row = await c.env.DB.prepare('select fails, blocked_until from login_guard where ip = ?')
+    .bind(ip)
+    .first<{ fails: number; blocked_until: string | null }>();
+  if (row?.blocked_until && row.blocked_until > new Date().toISOString()) {
+    const mins = Math.ceil((Date.parse(row.blocked_until) - Date.now()) / 60000);
+    throw new ApiError(429, `尝试太多次了，请 ${mins} 分钟后再试`);
+  }
+  return { ip, fails: row?.fails ?? 0 };
+}
+
+async function recordFail(env: Env, ip: string, fails: number): Promise<number> {
+  const next = fails + 1;
+  const blockedUntil = next >= MAX_FAILS ? new Date(Date.now() + BLOCK_MINUTES * 60_000).toISOString() : null;
+  await env.DB.batch([
+    env.DB.prepare(
+      `insert into login_guard (ip, fails, blocked_until, updated_at)
+       values (?, ?, ?, datetime('now'))
+       on conflict (ip) do update set fails = excluded.fails, blocked_until = excluded.blocked_until,
+                                      updated_at = excluded.updated_at`,
+    ).bind(ip, next, blockedUntil),
+    // 顺手清掉一天前的记录，这张表不该越长越大
+    env.DB.prepare("delete from login_guard where updated_at < datetime('now', '-1 day')"),
+  ]);
+  return MAX_FAILS - next;
+}
+
+async function startSession(env: Env, userId: number): Promise<string> {
+  const token = randomHex(32);
+  const expires = new Date(Date.now() + SESSION_DAYS * 86400_000).toISOString();
+  await env.DB.batch([
+    // 库里只存令牌的哈希：即使数据库内容外泄，也没法拿去冒充登录
+    env.DB.prepare('insert into sessions (token_hash, user_id, expires_at) values (?, ?, ?)').bind(
+      await sha256Hex(token),
+      userId,
+      expires,
+    ),
+    env.DB.prepare("delete from sessions where expires_at < datetime('now')"),
+  ]);
+  return token;
+}
+
+/** 登录、注册之外的所有接口都要带上有效会话 */
+export const requireAuth: MiddlewareHandler<AppEnv> = async (c, next) => {
+  const path = new URL(c.req.url).pathname;
+  if (path === '/api/register' || path === '/api/login' || path === '/api/logout' || path === '/api/me') {
+    return next();
+  }
+
+  const token = getCookie(c, COOKIE_NAME);
+  if (!token) throw new ApiError(401, '请先登录');
+
+  const row = await c.env.DB.prepare(
+    `select s.user_id from sessions s where s.token_hash = ? and s.expires_at > datetime('now')`,
+  )
+    .bind(await sha256Hex(token))
+    .first<{ user_id: number }>();
+  if (!row) throw new ApiError(401, '登录已过期，请重新登录');
+
+  c.set('userId', row.user_id);
   return next();
 };
 
-export function registerAuthRoutes(app: import('hono').Hono<{ Bindings: Env }>) {
+export function registerAuthRoutes(app: Hono<AppEnv>) {
   /** 前端启动时问一句：这台手机还认不认得 */
-  app.get('/api/session', async (c) => {
-    const configured = Boolean(c.env.APP_PIN);
-    const ok = configured && (await tokenValid(c.env.APP_PIN!, getCookie(c, COOKIE_NAME)));
-    return c.json({ ok, configured });
+  app.get('/api/me', async (c) => {
+    const token = getCookie(c, COOKIE_NAME);
+    if (!token) return c.json({ ok: false });
+    const row = await c.env.DB.prepare(
+      `select u.id, u.username, u.display_name from sessions s
+       join users u on u.id = s.user_id
+       where s.token_hash = ? and s.expires_at > datetime('now')`,
+    )
+      .bind(await sha256Hex(token))
+      .first<{ id: number; username: string; display_name: string }>();
+    if (!row) return c.json({ ok: false });
+    return c.json({ ok: true, user: { id: row.id, username: row.username, displayName: row.display_name } });
+  });
+
+  app.post('/api/register', async (c) => {
+    const { ip, fails } = await throttle(c);
+    const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+    const displayName = requireUsername(body.username);
+    const username = displayName.toLowerCase();
+    const clientKey = requireClientKey(body.key);
+
+    const exists = await c.env.DB.prepare('select id from users where username = ?')
+      .bind(username)
+      .first<{ id: number }>();
+    if (exists) {
+      await recordFail(c.env, ip, fails);
+      throw new ApiError(409, '这个用户名已经被注册了');
+    }
+
+    const salt = randomHex(16);
+    const passHash = await derive(clientKey, salt, SERVER_ITERATIONS);
+    const res = await c.env.DB.prepare(
+      'insert into users (username, display_name, salt, pass_hash, iterations) values (?, ?, ?, ?, ?)',
+    )
+      .bind(username, displayName, salt, passHash, SERVER_ITERATIONS)
+      .run();
+
+    const userId = Number(res.meta.last_row_id);
+    // 新账号先铺一套常备物料，省得对着空列表一件件手输
+    await c.env.DB.batch(
+      SEED_ITEMS.map((s) =>
+        c.env.DB.prepare(
+          'insert into items (user_id, name, category, unit, pack_size, pack_unit, min_stock) values (?, ?, ?, ?, ?, ?, ?)',
+        ).bind(userId, s.name, s.category, s.unit, s.packSize ?? null, s.packUnit ?? null, s.minStock),
+      ),
+    );
+
+    const token = await startSession(c.env, userId);
+    setCookie(c, COOKIE_NAME, token, sessionCookieOptions(c.req.url));
+    return c.json({ ok: true, user: { id: userId, username, displayName }, seeded: SEED_ITEMS.length }, 201);
   });
 
   app.post('/api/login', async (c) => {
-    const pin = requirePin(c.env);
-    const ip = clientIp(c);
+    const { ip, fails } = await throttle(c);
+    const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+    const username = (typeof body.username === 'string' ? body.username.trim() : '').toLowerCase();
+    const clientKey = requireClientKey(body.key);
 
-    const guard = await c.env.DB.prepare('select fails, blocked_until from login_guard where ip = ?')
-      .bind(ip)
-      .first<{ fails: number; blocked_until: string | null }>();
-    if (guard?.blocked_until && guard.blocked_until > new Date().toISOString()) {
-      const mins = Math.ceil((Date.parse(guard.blocked_until) - Date.now()) / 60000);
-      throw new ApiError(429, `输错太多次了，请 ${mins} 分钟后再试`);
-    }
+    const user = await c.env.DB.prepare(
+      'select id, username, display_name, salt, pass_hash, iterations from users where username = ?',
+    )
+      .bind(username)
+      .first<{
+        id: number;
+        username: string;
+        display_name: string;
+        salt: string;
+        pass_hash: string;
+        iterations: number;
+      }>();
 
-    const body = await c.req.json<{ pin?: unknown }>().catch(() => ({ pin: '' }));
-    const input = typeof body.pin === 'string' ? body.pin : '';
-
-    if (!timingSafeEqual(input, pin)) {
-      const fails = (guard?.fails ?? 0) + 1;
-      const blockedUntil = fails >= MAX_FAILS ? new Date(Date.now() + BLOCK_MINUTES * 60_000).toISOString() : null;
-      await c.env.DB.prepare(
-        `insert into login_guard (ip, fails, blocked_until, updated_at)
-         values (?, ?, ?, datetime('now'))
-         on conflict (ip) do update set fails = excluded.fails, blocked_until = excluded.blocked_until,
-                                        updated_at = excluded.updated_at`,
-      )
-        .bind(ip, fails, blockedUntil)
-        .run();
-      // 顺手清掉一天前的记录，这张表不该越长越大
-      await c.env.DB.prepare("delete from login_guard where updated_at < datetime('now', '-1 day')").run();
-
-      const left = MAX_FAILS - fails;
-      throw new ApiError(401, left > 0 ? `PIN 不对，还可以试 ${left} 次` : `输错太多次了，请 ${BLOCK_MINUTES} 分钟后再试`);
+    // 用户名不存在和密码错误返回同一句话，免得被人拿来枚举有哪些账号
+    const hash = user ? await derive(clientKey, user.salt, user.iterations) : '';
+    if (!user || !timingSafeEqual(hash, user.pass_hash)) {
+      const left = await recordFail(c.env, ip, fails);
+      throw new ApiError(401, left > 0 ? `用户名或密码不对，还可以试 ${left} 次` : '尝试太多次了，请稍后再试');
     }
 
     await c.env.DB.prepare('delete from login_guard where ip = ?').bind(ip).run();
-
-    setCookie(c, COOKIE_NAME, await issueToken(pin), {
-      httpOnly: true,
-      // 本地 http://localhost 调试时不能带 Secure，否则浏览器直接丢弃
-      secure: new URL(c.req.url).protocol === 'https:',
-      sameSite: 'Lax',
-      path: '/',
-      maxAge: SESSION_DAYS * 86400,
+    const token = await startSession(c.env, user.id);
+    setCookie(c, COOKIE_NAME, token, sessionCookieOptions(c.req.url));
+    return c.json({
+      ok: true,
+      user: { id: user.id, username: user.username, displayName: user.display_name },
     });
-    return c.json({ ok: true });
   });
 
-  app.post('/api/logout', (c) => {
+  app.post('/api/logout', async (c) => {
+    const token = getCookie(c, COOKIE_NAME);
+    if (token) {
+      await c.env.DB.prepare('delete from sessions where token_hash = ?').bind(await sha256Hex(token)).run();
+    }
     deleteCookie(c, COOKIE_NAME, { path: '/' });
     return c.json({ ok: true });
   });

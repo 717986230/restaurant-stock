@@ -5,11 +5,11 @@ import {
   requireNumber,
   requireText,
   toItemDto,
-  type Env,
+  type AppEnv,
   type ItemRow,
 } from './types';
 
-export const items = new Hono<{ Bindings: Env }>();
+export const items = new Hono<AppEnv>();
 
 const ITEM_SELECT = `
   select i.id, i.name, i.category, i.unit, i.pack_size, i.pack_unit,
@@ -32,8 +32,8 @@ items.get('/', async (c) => {
   const category = c.req.query('category')?.trim();
   const onlyLow = c.req.query('low') === '1';
 
-  const where: string[] = ['i.archived = 0'];
-  const binds: unknown[] = [];
+  const where: string[] = ['i.user_id = ?', 'i.archived = 0'];
+  const binds: unknown[] = [c.var.userId];
   if (q) {
     where.push('i.name like ?');
     binds.push(`%${q}%`);
@@ -53,14 +53,16 @@ items.get('/', async (c) => {
 
 items.get('/categories', async (c) => {
   const { results } = await c.env.DB.prepare(
-    'select distinct category from items where archived = 0 order by category',
-  ).all<{ category: string }>();
+    'select distinct category from items where user_id = ? and archived = 0 order by category',
+  )
+    .bind(c.var.userId)
+    .all<{ category: string }>();
   return c.json(results.map((r) => r.category));
 });
 
 items.get('/:id', async (c) => {
   const id = Number(c.req.param('id'));
-  const row = await c.env.DB.prepare(`${ITEM_SELECT} where i.id = ?`).bind(id).first<ItemRow>();
+  const row = await c.env.DB.prepare(`${ITEM_SELECT} where i.id = ? and i.user_id = ?`).bind(id, c.var.userId).first<ItemRow>();
   if (!row) throw new ApiError(404, '货品不存在');
   return c.json(toItemDto(row));
 });
@@ -74,25 +76,25 @@ items.post('/', async (c) => {
   const note = optionalText(body.note, 255);
   const pack = readPack(body);
 
-  const existing = await c.env.DB.prepare('select id, archived from items where name = ?')
-    .bind(name)
+  const existing = await c.env.DB.prepare('select id, archived from items where user_id = ? and name = ?')
+    .bind(c.var.userId, name)
     .first<{ id: number; archived: number }>();
   if (existing) {
     if (existing.archived === 0) throw new ApiError(409, `「${name}」已经存在了`);
     // 之前删掉过同名货品：复用这条记录，历史流水也就跟着回来了
     await c.env.DB.prepare(
       `update items set archived = 0, category = ?, unit = ?, pack_size = ?, pack_unit = ?,
-                        min_stock = ?, note = ? where id = ?`,
+                        min_stock = ?, note = ? where id = ? and user_id = ?`,
     )
-      .bind(category, unit, pack.size, pack.unit, minStock, note, existing.id)
+      .bind(category, unit, pack.size, pack.unit, minStock, note, existing.id, c.var.userId)
       .run();
     return c.json({ id: existing.id, restored: true }, 201);
   }
 
   const res = await c.env.DB.prepare(
-    'insert into items (name, category, unit, pack_size, pack_unit, min_stock, note) values (?, ?, ?, ?, ?, ?, ?)',
+    'insert into items (user_id, name, category, unit, pack_size, pack_unit, min_stock, note) values (?, ?, ?, ?, ?, ?, ?, ?)',
   )
-    .bind(name, category, unit, pack.size, pack.unit, minStock, note)
+    .bind(c.var.userId, name, category, unit, pack.size, pack.unit, minStock, note)
     .run();
   return c.json({ id: res.meta.last_row_id, restored: false }, 201);
 });
@@ -107,16 +109,16 @@ items.put('/:id', async (c) => {
   const note = optionalText(body.note, 255);
   const pack = readPack(body);
 
-  const clash = await c.env.DB.prepare('select id from items where name = ? and id <> ?')
-    .bind(name, id)
+  const clash = await c.env.DB.prepare('select id from items where user_id = ? and name = ? and id <> ?')
+    .bind(c.var.userId, name, id)
     .first<{ id: number }>();
   if (clash) throw new ApiError(409, `「${name}」已经存在了`);
 
   const res = await c.env.DB.prepare(
     `update items set name = ?, category = ?, unit = ?, pack_size = ?, pack_unit = ?,
-                      min_stock = ?, note = ? where id = ? and archived = 0`,
+                      min_stock = ?, note = ? where id = ? and user_id = ? and archived = 0`,
   )
-    .bind(name, category, unit, pack.size, pack.unit, minStock, note, id)
+    .bind(name, category, unit, pack.size, pack.unit, minStock, note, id, c.var.userId)
     .run();
   if (res.meta.changes === 0) throw new ApiError(404, '货品不存在');
   return c.json({ ok: true });
@@ -125,15 +127,19 @@ items.put('/:id', async (c) => {
 /** 软删除：流水是账，不能因为下架一个货品就凭空消失 */
 items.delete('/:id', async (c) => {
   const id = Number(c.req.param('id'));
-  const res = await c.env.DB.prepare('update items set archived = 1 where id = ?').bind(id).run();
+  const res = await c.env.DB.prepare('update items set archived = 1 where id = ? and user_id = ?').bind(id, c.var.userId).run();
   if (res.meta.changes === 0) throw new ApiError(404, '货品不存在');
   return c.json({ ok: true });
 });
 
 items.get('/:id/image', async (c) => {
   const id = Number(c.req.param('id'));
-  const row = await c.env.DB.prepare('select mime, bytes, updated_at from item_images where item_id = ?')
-    .bind(id)
+  const row = await c.env.DB.prepare(
+    `select im.mime, im.bytes, im.updated_at from item_images im
+     join items i on i.id = im.item_id
+     where im.item_id = ? and i.user_id = ?`,
+  )
+    .bind(id, c.var.userId)
     .first<{ mime: string; bytes: ArrayBuffer | number[]; updated_at: string }>();
   if (!row) throw new ApiError(404, '还没有图片');
 
@@ -151,8 +157,8 @@ const MAX_IMAGE_BYTES = 1_500_000;
 
 items.post('/:id/image', async (c) => {
   const id = Number(c.req.param('id'));
-  const item = await c.env.DB.prepare('select id from items where id = ? and archived = 0')
-    .bind(id)
+  const item = await c.env.DB.prepare('select id from items where id = ? and user_id = ? and archived = 0')
+    .bind(id, c.var.userId)
     .first<{ id: number }>();
   if (!item) throw new ApiError(404, '货品不存在');
 
@@ -168,7 +174,7 @@ items.post('/:id/image', async (c) => {
       `insert into item_images (item_id, mime, bytes, updated_at) values (?, ?, ?, datetime('now'))
        on conflict (item_id) do update set mime = excluded.mime, bytes = excluded.bytes, updated_at = excluded.updated_at`,
     ).bind(id, file.type, bytes),
-    c.env.DB.prepare('update items set has_image = 1 where id = ?').bind(id),
+    c.env.DB.prepare('update items set has_image = 1 where id = ? and user_id = ?').bind(id, c.var.userId),
   ]);
 
   return c.json({ ok: true, url: `/api/items/${id}/image?t=${Date.now()}` });
@@ -176,6 +182,10 @@ items.post('/:id/image', async (c) => {
 
 items.delete('/:id/image', async (c) => {
   const id = Number(c.req.param('id'));
+  const own = await c.env.DB.prepare('select id from items where id = ? and user_id = ?')
+    .bind(id, c.var.userId)
+    .first<{ id: number }>();
+  if (!own) throw new ApiError(404, '货品不存在');
   await c.env.DB.batch([
     c.env.DB.prepare('delete from item_images where item_id = ?').bind(id),
     c.env.DB.prepare('update items set has_image = 0 where id = ?').bind(id),

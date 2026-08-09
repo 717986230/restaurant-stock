@@ -1,8 +1,12 @@
 export interface Env {
   DB: D1Database;
-  /** 6 位登录 PIN，用 `wrangler secret put APP_PIN` 设置，不进代码库 */
-  APP_PIN?: string;
 }
+
+/** 鉴权中间件把当前登录用户放进 c.var.userId，业务查询一律按它过滤 */
+export type AppEnv = {
+  Bindings: Env;
+  Variables: { userId: number };
+};
 
 export type MoveKind = 'IN' | 'OUT' | 'CHECK';
 
