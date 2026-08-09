@@ -1,3 +1,5 @@
+import { ref } from 'vue';
+
 export type StockStatus = 'OUT' | 'LOW' | 'OK';
 export type MoveKind = 'IN' | 'OUT' | 'CHECK';
 
@@ -5,7 +7,12 @@ export interface Item {
   id: number;
   name: string;
   category: string;
+  /** 基本单位（瓶 / 听 / 箱…），库存和流水一律以它计数 */
   unit: string;
+  /** 一个大单位等于多少个基本单位，如 1 箱 = 24 瓶；null 表示不换算 */
+  packSize: number | null;
+  /** 大单位名，如「箱」 */
+  packUnit: string | null;
   minStock: number;
   lastPrice: number | null;
   hasImage: boolean;
@@ -40,9 +47,13 @@ export interface Summary {
   todayCheck: number;
 }
 
+/** 会话失效时置为 true，App 会盖上锁屏；任何一个接口 401 都会触发 */
+export const locked = ref(false);
+
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`/api${path}`, init);
   if (!res.ok) {
+    if (res.status === 401 && path !== '/login') locked.value = true;
     let message = `请求失败（${res.status}）`;
     try {
       const body = (await res.json()) as { error?: string };
@@ -63,6 +74,19 @@ export function today(): string {
 }
 
 export const api = {
+  session() {
+    return request<{ ok: boolean; configured: boolean }>('/session');
+  },
+  login(pin: string) {
+    return request<{ ok: true }>('/login', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ pin }),
+    });
+  },
+  logout() {
+    return request<{ ok: true }>('/logout', { method: 'POST' });
+  },
   items(params: { q?: string; category?: string; low?: boolean } = {}) {
     const qs = new URLSearchParams();
     if (params.q) qs.set('q', params.q);
@@ -138,4 +162,27 @@ export function imageUrl(item: Pick<Item, 'id' | 'hasImage'>): string | null {
 const NUMBER_FORMAT = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 3 });
 export function fmt(n: number): string {
   return NUMBER_FORMAT.format(n);
+}
+
+export function round3(n: number): number {
+  return Math.round((n + Number.EPSILON) * 1000) / 1000;
+}
+
+type PackItem = Pick<Item, 'unit' | 'packSize' | 'packUnit'>;
+
+/**
+ * 把总瓶数折成「3 箱 5 瓶」。库存永远按瓶存，箱只在显示和录入时换算，
+ * 所以拆箱零卖之后不会冒出「0.21 箱」这种没法点货的数。
+ */
+export function packText(qty: number, item: PackItem): string {
+  if (!item.packSize || qty <= 0) return '';
+  const boxes = Math.floor(qty / item.packSize);
+  const rest = round3(qty - boxes * item.packSize);
+  if (!boxes) return '';
+  return rest ? `${fmt(boxes)} ${item.packUnit} ${fmt(rest)} ${item.unit}` : `${fmt(boxes)} ${item.packUnit}`;
+}
+
+/** 「1 箱 = 24 瓶」这行说明文字 */
+export function packSpec(item: PackItem): string {
+  return item.packSize ? `1 ${item.packUnit} = ${fmt(item.packSize)} ${item.unit}` : '';
 }

@@ -1,9 +1,14 @@
 import { Hono } from 'hono';
+import { registerAuthRoutes, requireAuth } from './auth';
 import { items } from './items';
 import { moves } from './moves';
-import { ApiError, normalizeDay, statusOf, toItemDto, type Env, type ItemRow } from './types';
+import { ApiError, normalizeDay, round3, statusOf, toItemDto, type Env, type ItemRow } from './types';
 
 const app = new Hono<{ Bindings: Env }>();
+
+// 放在所有业务路由之前：漏掉一条路由就等于漏掉一道门
+app.use('/api/*', requireAuth);
+registerAuthRoutes(app);
 
 app.route('/api/items', items);
 app.route('/api/moves', moves);
@@ -47,15 +52,27 @@ app.get('/api/summary', async (c) => {
 /** 导出当前结存，微信发给会计或者自己存档 */
 app.get('/api/export.csv', async (c) => {
   const { results } = await c.env.DB.prepare(
-    `select i.id, i.name, i.category, i.unit, i.min_stock, i.last_price, i.has_image, i.note,
+    `select i.id, i.name, i.category, i.unit, i.pack_size, i.pack_unit,
+            i.min_stock, i.last_price, i.has_image, i.note,
             coalesce((select sum(m.qty) from stock_moves m where m.item_id = i.id), 0) as stock
      from items i where i.archived = 0 order by i.category, i.name`,
   ).all<ItemRow>();
 
   const label = { OUT: '已用光', LOW: '偏低', OK: '正常' } as const;
-  const header = ['分类', '货品', '单位', '当前结存', '低库存阈值', '状态', '最近进价', '备注'];
+  const header = ['分类', '货品', '单位', '当前结存', '折合整箱', '整箱规格', '低库存阈值', '状态', '最近进价', '备注'];
   const lines = results.map(toItemDto).map((it) =>
-    [it.category, it.name, it.unit, it.stock, it.minStock, label[it.status], it.lastPrice ?? '', it.note ?? '']
+    [
+      it.category,
+      it.name,
+      it.unit,
+      it.stock,
+      it.packSize ? packText(it.stock, it.packSize, it.packUnit!, it.unit) : '',
+      it.packSize ? `1${it.packUnit} = ${it.packSize}${it.unit}` : '',
+      it.minStock,
+      label[it.status],
+      it.lastPrice ?? '',
+      it.note ?? '',
+    ]
       .map(csvCell)
       .join(','),
   );
@@ -70,6 +87,15 @@ app.get('/api/export.csv', async (c) => {
     },
   });
 });
+
+/** 把总瓶数写成「3箱5瓶」这种人能直接照着点货的形式 */
+function packText(stock: number, packSize: number, packUnit: string, unit: string): string {
+  if (stock <= 0) return '';
+  const boxes = Math.floor(stock / packSize);
+  const rest = round3(stock - boxes * packSize);
+  if (!boxes) return `${rest}${unit}`;
+  return rest ? `${boxes}${packUnit}${rest}${unit}` : `${boxes}${packUnit}`;
+}
 
 function csvCell(v: unknown): string {
   const s = String(v ?? '');

@@ -12,10 +12,19 @@ import {
 export const items = new Hono<{ Bindings: Env }>();
 
 const ITEM_SELECT = `
-  select i.id, i.name, i.category, i.unit, i.min_stock, i.last_price, i.has_image, i.note,
+  select i.id, i.name, i.category, i.unit, i.pack_size, i.pack_unit,
+         i.min_stock, i.last_price, i.has_image, i.note,
          coalesce((select sum(m.qty) from stock_moves m where m.item_id = i.id), 0) as stock
   from items i
 `;
+
+/** 整箱规格：两个字段要么都填，要么都不填，半套配置会让前端换算算不出来 */
+function readPack(body: Record<string, unknown>): { size: number | null; unit: string | null } {
+  const rawSize = body.packSize;
+  if (rawSize === undefined || rawSize === null || rawSize === '') return { size: null, unit: null };
+  const size = requireNumber(rawSize, '每箱数量', { min: 0.001 });
+  return { size, unit: optionalText(body.packUnit, 16) ?? '箱' };
+}
 
 /** 列表：支持关键字、分类筛选，以及"只看告警"。告警判断依赖结存，只能在取出后过滤。 */
 items.get('/', async (c) => {
@@ -63,6 +72,7 @@ items.post('/', async (c) => {
   const unit = optionalText(body.unit, 16) ?? '箱';
   const minStock = body.minStock === undefined ? 0 : requireNumber(body.minStock, '低库存阈值', { min: 0 });
   const note = optionalText(body.note, 255);
+  const pack = readPack(body);
 
   const existing = await c.env.DB.prepare('select id, archived from items where name = ?')
     .bind(name)
@@ -71,17 +81,18 @@ items.post('/', async (c) => {
     if (existing.archived === 0) throw new ApiError(409, `「${name}」已经存在了`);
     // 之前删掉过同名货品：复用这条记录，历史流水也就跟着回来了
     await c.env.DB.prepare(
-      'update items set archived = 0, category = ?, unit = ?, min_stock = ?, note = ? where id = ?',
+      `update items set archived = 0, category = ?, unit = ?, pack_size = ?, pack_unit = ?,
+                        min_stock = ?, note = ? where id = ?`,
     )
-      .bind(category, unit, minStock, note, existing.id)
+      .bind(category, unit, pack.size, pack.unit, minStock, note, existing.id)
       .run();
     return c.json({ id: existing.id, restored: true }, 201);
   }
 
   const res = await c.env.DB.prepare(
-    'insert into items (name, category, unit, min_stock, note) values (?, ?, ?, ?, ?)',
+    'insert into items (name, category, unit, pack_size, pack_unit, min_stock, note) values (?, ?, ?, ?, ?, ?, ?)',
   )
-    .bind(name, category, unit, minStock, note)
+    .bind(name, category, unit, pack.size, pack.unit, minStock, note)
     .run();
   return c.json({ id: res.meta.last_row_id, restored: false }, 201);
 });
@@ -94,6 +105,7 @@ items.put('/:id', async (c) => {
   const unit = optionalText(body.unit, 16) ?? '箱';
   const minStock = requireNumber(body.minStock ?? 0, '低库存阈值', { min: 0 });
   const note = optionalText(body.note, 255);
+  const pack = readPack(body);
 
   const clash = await c.env.DB.prepare('select id from items where name = ? and id <> ?')
     .bind(name, id)
@@ -101,9 +113,10 @@ items.put('/:id', async (c) => {
   if (clash) throw new ApiError(409, `「${name}」已经存在了`);
 
   const res = await c.env.DB.prepare(
-    'update items set name = ?, category = ?, unit = ?, min_stock = ?, note = ? where id = ? and archived = 0',
+    `update items set name = ?, category = ?, unit = ?, pack_size = ?, pack_unit = ?,
+                      min_stock = ?, note = ? where id = ? and archived = 0`,
   )
-    .bind(name, category, unit, minStock, note, id)
+    .bind(name, category, unit, pack.size, pack.unit, minStock, note, id)
     .run();
   if (res.meta.changes === 0) throw new ApiError(404, '货品不存在');
   return c.json({ ok: true });

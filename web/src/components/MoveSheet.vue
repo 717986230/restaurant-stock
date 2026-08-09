@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch, nextTick } from 'vue';
-import { api, fmt, type Item, type MoveKind } from '@/api';
+import { api, fmt, packSpec, packText, round3, type Item, type MoveKind } from '@/api';
 import { toast, toastError } from '@/toast';
 
 const props = defineProps<{ item: Item | null; kind: MoveKind }>();
@@ -11,15 +11,24 @@ const unitPrice = ref('');
 const note = ref('');
 const saving = ref(false);
 const qtyInput = ref<HTMLInputElement | null>(null);
+/** 这次按「箱」还是按「瓶」录入。进货按箱、领用按瓶，所以两边默认值不一样。 */
+const byPack = ref(false);
 
 const title = computed(() => (props.kind === 'IN' ? '入库' : '出库 / 领用'));
+const canPack = computed(() => Boolean(props.item?.packSize));
+const entryUnit = computed(() => (byPack.value && props.item ? props.item.packUnit! : (props.item?.unit ?? '')));
+
+/** 无论按哪个单位录入，存进数据库的永远是基本单位的数量 */
+const qtyBase = computed(() => {
+  const n = Number(qty.value);
+  if (!Number.isFinite(n) || n <= 0 || !props.item) return null;
+  return byPack.value ? round3(n * props.item.packSize!) : round3(n);
+});
 
 // 出库不能凭空多出来：预估一下这笔记完之后还剩多少，让人在按确定之前就看见
 const preview = computed(() => {
-  if (!props.item) return null;
-  const n = Number(qty.value);
-  if (!Number.isFinite(n) || n <= 0) return null;
-  return props.item.stock + (props.kind === 'IN' ? n : -n);
+  if (!props.item || qtyBase.value === null) return null;
+  return round3(props.item.stock + (props.kind === 'IN' ? qtyBase.value : -qtyBase.value));
 });
 
 watch(
@@ -28,26 +37,33 @@ watch(
     if (!item) return;
     qty.value = '';
     note.value = '';
-    unitPrice.value = props.kind === 'IN' && item.lastPrice != null ? String(item.lastPrice) : '';
+    // 进货是整箱来的，领用是一瓶一瓶拿的
+    byPack.value = Boolean(item.packSize) && props.kind === 'IN';
+    unitPrice.value = '';
     await nextTick();
     qtyInput.value?.focus();
   },
 );
 
+// 切换箱/瓶时清掉进价：同一个数字在两种单位下含义差着几十倍，留着容易记错账
+watch(byPack, () => (unitPrice.value = ''));
+
 async function submit() {
   if (!props.item) return;
-  const n = Number(qty.value);
-  if (!Number.isFinite(n) || n <= 0) {
+  if (qtyBase.value === null) {
     toastError(new Error('请输入数量'));
     return;
   }
   saving.value = true;
   try {
+    const price = Number(unitPrice.value);
+    const hasPrice = props.kind === 'IN' && unitPrice.value !== '' && Number.isFinite(price) && price >= 0;
     const res = await api.createMove({
       itemId: props.item.id,
       kind: props.kind,
-      qty: n,
-      unitPrice: props.kind === 'IN' && unitPrice.value ? Number(unitPrice.value) : null,
+      qty: qtyBase.value,
+      // 进价一律折成「每个基本单位多少钱」再存，不然按箱记和按瓶记的价没法比
+      unitPrice: hasPrice ? (byPack.value ? round3(price / props.item.packSize!) : price) : null,
       note: note.value || null,
     });
     const warn = res.status === 'OUT' ? '，已用光！' : res.status === 'LOW' ? '，库存偏低' : '';
@@ -70,13 +86,22 @@ async function submit() {
           <header>
             <div>
               <strong>{{ title }}</strong>
-              <div class="muted small">{{ item.name }}　当前 {{ fmt(item.stock) }} {{ item.unit }}</div>
+              <div class="muted small">
+              {{ item.name }}　当前 {{ fmt(item.stock) }} {{ item.unit }}
+              <template v-if="packText(item.stock, item)">（{{ packText(item.stock, item) }}）</template>
+            </div>
             </div>
             <button class="x" @click="emit('close')" aria-label="关闭">✕</button>
           </header>
 
-          <label class="field">
-            <span>数量（{{ item.unit }}）</span>
+          <div class="field">
+            <div class="label-row">
+              <span>数量（{{ entryUnit }}）</span>
+              <div v-if="canPack" class="seg">
+                <button :class="{ on: byPack }" @click="byPack = true">按{{ item.packUnit }}</button>
+                <button :class="{ on: !byPack }" @click="byPack = false">按{{ item.unit }}</button>
+              </div>
+            </div>
             <input
               ref="qtyInput"
               v-model="qty"
@@ -88,11 +113,20 @@ async function submit() {
               placeholder="0"
               @keyup.enter="submit"
             />
-          </label>
+            <p v-if="canPack" class="conv">
+              {{ packSpec(item) }}
+              <template v-if="byPack && qtyBase !== null">
+                　→ 本次 <strong>{{ fmt(qtyBase) }} {{ item.unit }}</strong>
+              </template>
+            </p>
+          </div>
 
           <label v-if="kind === 'IN'" class="field">
-            <span>进价（元 / {{ item.unit }}，可不填）</span>
+            <span>进价（元 / {{ entryUnit }}，可不填）</span>
             <input v-model="unitPrice" class="input" type="number" inputmode="decimal" step="0.01" min="0" />
+            <p v-if="byPack && Number(unitPrice) > 0" class="conv">
+              折合 ¥{{ fmt(round3(Number(unitPrice) / item.packSize!)) }} / {{ item.unit }}
+            </p>
           </label>
 
           <label class="field">
@@ -102,6 +136,7 @@ async function submit() {
 
           <p v-if="preview !== null" class="preview" :class="{ neg: preview < 0 }">
             记完还剩 <strong>{{ fmt(preview) }}</strong> {{ item.unit }}
+            <template v-if="packText(preview, item)">＝ {{ packText(preview, item) }}</template>
             <span v-if="preview < 0">（会记成负数，先确认是不是漏记了入库）</span>
           </p>
 
@@ -155,6 +190,48 @@ header strong {
   font-weight: 650;
   text-align: center;
   letter-spacing: 0.5px;
+}
+
+.label-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 6px;
+}
+
+.label-row > span {
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.seg {
+  display: flex;
+  border: 1px solid var(--line);
+  border-radius: 9px;
+  overflow: hidden;
+}
+
+.seg button {
+  padding: 5px 12px;
+  font-size: 13px;
+  color: var(--muted);
+  background: var(--card);
+}
+
+.seg button.on {
+  background: var(--brand);
+  color: #fff;
+  font-weight: 600;
+}
+
+.conv {
+  margin: 6px 0 0;
+  font-size: 13px;
+  color: var(--muted);
+}
+
+.conv strong {
+  color: var(--brand);
 }
 
 .preview {

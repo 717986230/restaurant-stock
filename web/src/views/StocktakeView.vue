@@ -1,14 +1,19 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
-import { api, fmt, type Item } from '@/api';
+import { api, fmt, packSpec, packText, round3, type Item } from '@/api';
 import { toast, toastError } from '@/toast';
 
 const categories = ref<string[]>([]);
 const category = ref('');
 const list = ref<Item[]>([]);
-const counted = ref<Record<number, string>>({});
+/** 每行两个输入框：整箱数和散装数。酒水饮料点货时本来就是「3 箱零 5 瓶」这么数的。 */
+const counted = ref<Record<number, { box: string; base: string }>>({});
 const loading = ref(true);
 const saving = ref(false);
+
+function cell(id: number) {
+  return (counted.value[id] ??= { box: '', base: '' });
+}
 
 async function load() {
   loading.value = true;
@@ -34,12 +39,21 @@ onMounted(async () => {
 
 watch(category, load);
 
-/** 只提交真正数过的行：空着的表示这次没盘，不能当成 0 */
+/** 两个框都空着表示这行没盘，不能当成 0 —— 那会把满仓的货直接清零 */
+function total(it: Item): number | null {
+  const c = counted.value[it.id];
+  if (!c || (c.box === '' && c.base === '')) return null;
+  const box = c.box === '' ? 0 : Number(c.box);
+  const base = c.base === '' ? 0 : Number(c.base);
+  if (!Number.isFinite(box) || !Number.isFinite(base) || box < 0 || base < 0) return null;
+  return round3(box * (it.packSize ?? 0) + base);
+}
+
 const pending = computed(() =>
   list.value
-    .map((it) => ({ it, value: counted.value[it.id] }))
-    .filter(({ value }) => value !== undefined && value !== '' && Number.isFinite(Number(value)))
-    .map(({ it, value }) => ({ it, qty: Number(value), diff: Number(value) - it.stock })),
+    .map((it) => ({ it, qty: total(it) }))
+    .filter((p): p is { it: Item; qty: number } => p.qty !== null)
+    .map((p) => ({ ...p, diff: round3(p.qty - p.it.stock) })),
 );
 
 async function submit() {
@@ -75,12 +89,7 @@ async function submit() {
     <p class="muted small hint">数一遍实际有多少，填进去。系统自动算出差额并记一笔盘点流水。</p>
     <div class="chips">
       <button :class="['chip', { on: category === '' }]" @click="category = ''">全部</button>
-      <button
-        v-for="c in categories"
-        :key="c"
-        :class="['chip', { on: category === c }]"
-        @click="category = c"
-      >
+      <button v-for="c in categories" :key="c" :class="['chip', { on: category === c }]" @click="category = c">
         {{ c }}
       </button>
     </div>
@@ -92,30 +101,48 @@ async function submit() {
 
     <ul v-else class="rows">
       <li v-for="it in list" :key="it.id">
-        <div class="left">
+        <div class="head">
           <span class="name">{{ it.name }}</span>
-          <span class="muted small">账面 {{ fmt(it.stock) }} {{ it.unit }}</span>
+          <span class="diff" :class="{ plus: (total(it) ?? it.stock) - it.stock > 0.0005, minus: (total(it) ?? it.stock) - it.stock < -0.0005 }">
+            <template v-if="total(it) !== null">
+              {{ total(it)! - it.stock > 0 ? '+' : '' }}{{ fmt(round3(total(it)! - it.stock)) }} {{ it.unit }}
+            </template>
+          </span>
         </div>
-        <input
-          v-model="counted[it.id]"
-          class="input num"
-          type="number"
-          inputmode="decimal"
-          step="0.001"
-          min="0"
-          :placeholder="fmt(it.stock)"
-        />
-        <span
-          class="diff"
-          :class="{
-            plus: counted[it.id] !== undefined && counted[it.id] !== '' && Number(counted[it.id]) - it.stock > 0.0005,
-            minus: counted[it.id] !== undefined && counted[it.id] !== '' && Number(counted[it.id]) - it.stock < -0.0005,
-          }"
-        >
-          <template v-if="counted[it.id] !== undefined && counted[it.id] !== '' && Number.isFinite(Number(counted[it.id]))">
-            {{ Number(counted[it.id]) - it.stock > 0 ? '+' : '' }}{{ fmt(Math.round((Number(counted[it.id]) - it.stock) * 1000) / 1000) }}
-          </template>
-        </span>
+
+        <div class="line muted small">
+          账面 {{ fmt(it.stock) }} {{ it.unit }}
+          <template v-if="packText(it.stock, it)">（{{ packText(it.stock, it) }}）</template>
+          <template v-if="it.packSize">　{{ packSpec(it) }}</template>
+        </div>
+
+        <div class="inputs">
+          <label v-if="it.packSize" class="box">
+            <input
+              v-model="cell(it.id).box"
+              class="input num"
+              type="number"
+              inputmode="numeric"
+              step="1"
+              min="0"
+              placeholder="0"
+            />
+            <span>{{ it.packUnit }}</span>
+          </label>
+          <label class="box">
+            <input
+              v-model="cell(it.id).base"
+              class="input num"
+              type="number"
+              inputmode="decimal"
+              step="0.001"
+              min="0"
+              placeholder="0"
+            />
+            <span>{{ it.unit }}</span>
+          </label>
+          <span v-if="it.packSize && total(it) !== null" class="sum">共 {{ fmt(total(it)!) }} {{ it.unit }}</span>
+        </div>
       </li>
     </ul>
   </main>
@@ -171,11 +198,7 @@ async function submit() {
 }
 
 .rows li {
-  display: grid;
-  grid-template-columns: 1fr 96px 52px;
-  align-items: center;
-  gap: 8px;
-  padding: 9px 12px;
+  padding: 12px;
   border-bottom: 1px solid var(--line);
 }
 
@@ -183,26 +206,22 @@ async function submit() {
   border-bottom: none;
 }
 
-.left {
-  min-width: 0;
+.head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
 }
 
 .name {
-  display: block;
   font-size: 15px;
   font-weight: 600;
 }
 
-.num {
-  padding: 9px 10px;
-  text-align: center;
-}
-
 .diff {
-  font-size: 13px;
+  font-size: 14px;
   font-weight: 650;
-  text-align: right;
-  color: var(--muted);
+  white-space: nowrap;
 }
 
 .diff.plus {
@@ -211,6 +230,41 @@ async function submit() {
 
 .diff.minus {
   color: var(--danger);
+}
+
+.line {
+  margin-top: 2px;
+  line-height: 1.5;
+}
+
+.inputs {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 8px;
+}
+
+.box {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.box span {
+  font-size: 14px;
+  color: var(--muted);
+}
+
+.num {
+  width: 84px;
+  padding: 9px 8px;
+  text-align: center;
+}
+
+.sum {
+  font-size: 13px;
+  color: var(--brand);
+  font-weight: 600;
 }
 
 .submit-bar {

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
 import { RouterLink } from 'vue-router';
-import { api, fmt, today, type Item } from '@/api';
+import { api, fmt, locked, today, type Item } from '@/api';
 import { toastError } from '@/toast';
 
 const alerts = ref<Item[]>([]);
@@ -16,6 +16,17 @@ onMounted(async () => {
     loading.value = false;
   }
 });
+
+async function logout() {
+  if (!confirm('退出登录？下次打开要重新输 PIN。')) return;
+  try {
+    await api.logout();
+  } catch (e) {
+    toastError(e);
+  } finally {
+    locked.value = true;
+  }
+}
 
 /** 补货清单直接生成一段可以粘进微信发给供应商的文本 */
 async function copyShoppingList() {
@@ -58,6 +69,11 @@ async function copyShoppingList() {
     <div class="links">
       <RouterLink to="/items/new" class="link">➕ 新增货品</RouterLink>
       <a :href="`/api/export.csv?day=${today()}`" class="link">⬇️ 导出当前库存（CSV，可用 Excel 打开）</a>
+    </div>
+
+    <h2 class="sec">账号</h2>
+    <div class="links">
+      <button class="link logout" @click="logout">🔒 退出登录（这台手机需要重新输 PIN）</button>
     </div>
 
     <p class="muted small foot">
@@ -149,6 +165,12 @@ async function copyShoppingList() {
 
 .link:last-child {
   border-bottom: none;
+}
+
+.logout {
+  width: 100%;
+  text-align: left;
+  color: var(--danger);
 }
 
 .foot {

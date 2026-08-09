@@ -1,5 +1,7 @@
 export interface Env {
   DB: D1Database;
+  /** 6 位登录 PIN，用 `wrangler secret put APP_PIN` 设置，不进代码库 */
+  APP_PIN?: string;
 }
 
 export type MoveKind = 'IN' | 'OUT' | 'CHECK';
@@ -12,6 +14,8 @@ export interface ItemRow {
   name: string;
   category: string;
   unit: string;
+  pack_size: number | null;
+  pack_unit: string | null;
   min_stock: number;
   last_price: number | null;
   has_image: number;
@@ -23,7 +27,12 @@ export interface ItemDto {
   id: number;
   name: string;
   category: string;
+  /** 基本单位（瓶 / 听 / 箱…），库存和流水一律以它计数 */
   unit: string;
+  /** 一个大单位等于多少个基本单位，如 1 箱 = 24 瓶；null 表示不换算 */
+  packSize: number | null;
+  /** 大单位名，如「箱」 */
+  packUnit: string | null;
   minStock: number;
   lastPrice: number | null;
   hasImage: boolean;
@@ -49,6 +58,8 @@ export function toItemDto(row: ItemRow): ItemDto {
     name: row.name,
     category: row.category,
     unit: row.unit,
+    packSize: row.pack_size,
+    packUnit: row.pack_unit,
     minStock: row.min_stock,
     lastPrice: row.last_price,
     hasImage: row.has_image === 1,

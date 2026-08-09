@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
 import { RouterLink } from 'vue-router';
-import { api, fmt, type Item, type MoveKind, type Summary } from '@/api';
+import { api, fmt, packText, type Item, type MoveKind, type Summary } from '@/api';
 import { toastError } from '@/toast';
 import MoveSheet from '@/components/MoveSheet.vue';
 
@@ -119,6 +119,7 @@ function openSheet(item: Item, kind: MoveKind) {
               </div>
               <div class="qty">
                 <strong>{{ fmt(it.stock) }}</strong> {{ it.unit }}
+                <span v-if="packText(it.stock, it)" class="pack">＝ {{ packText(it.stock, it) }}</span>
                 <span v-if="it.minStock > 0" class="muted small">／低于 {{ fmt(it.minStock) }} 提醒</span>
               </div>
             </div>
@@ -301,6 +302,12 @@ function openSheet(item: Item, kind: MoveKind) {
 .qty strong {
   font-size: 17px;
   color: var(--text);
+}
+
+.pack {
+  color: var(--brand);
+  font-weight: 600;
+  margin-left: 2px;
 }
 
 .item.out .qty strong {

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
 import { RouterLink, useRoute, useRouter } from 'vue-router';
-import { api, fmt, type Item, type Move, type MoveKind } from '@/api';
+import { api, fmt, packSpec, packText, round3, type Item, type Move, type MoveKind } from '@/api';
 import { toast, toastError } from '@/toast';
 import ImagePicker from '@/components/ImagePicker.vue';
 import MoveSheet from '@/components/MoveSheet.vue';
@@ -85,6 +85,10 @@ function timeOf(iso: string): string {
         <strong>{{ fmt(item.stock) }}</strong>
         <span>{{ item.unit }}</span>
       </div>
+      <div v-if="item.packSize" class="pack">
+        <template v-if="packText(item.stock, item)">＝ {{ packText(item.stock, item) }}　</template>
+        <span class="muted small">{{ packSpec(item) }}</span>
+      </div>
       <div class="meta">
         <span v-if="item.status === 'OUT'" class="tag bad">库存已用光</span>
         <span v-else-if="item.status === 'LOW'" class="tag warn">库存不足，该补货了</span>
@@ -92,7 +96,10 @@ function timeOf(iso: string): string {
         <span class="muted small">
           {{ item.category }}
           <template v-if="item.minStock > 0">　低于 {{ fmt(item.minStock) }} {{ item.unit }} 提醒</template>
-          <template v-if="item.lastPrice != null">　最近进价 ¥{{ item.lastPrice }}</template>
+          <template v-if="item.lastPrice != null">
+            　最近进价 ¥{{ item.lastPrice }}/{{ item.unit }}
+            <template v-if="item.packSize">（≈¥{{ fmt(round3(item.lastPrice * item.packSize)) }}/{{ item.packUnit }}）</template>
+          </template>
         </span>
       </div>
     </div>
@@ -172,6 +179,13 @@ function timeOf(iso: string): string {
 .num span {
   margin-left: 6px;
   color: var(--muted);
+}
+
+.pack {
+  margin-top: 6px;
+  font-size: 14px;
+  color: var(--brand);
+  font-weight: 600;
 }
 
 .meta {

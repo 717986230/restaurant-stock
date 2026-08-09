@@ -1,9 +1,12 @@
 <script setup lang="ts">
 import { RouterLink, RouterView, useRoute } from 'vue-router';
-import { computed } from 'vue';
+import { computed, onMounted, ref } from 'vue';
+import { api, locked } from './api';
 import { toastState } from './toast';
+import LockScreen from './components/LockScreen.vue';
 
 const route = useRoute();
+const ready = ref(false);
 
 const tabs = [
   { to: '/', icon: '📦', label: '库存' },
@@ -14,19 +17,40 @@ const tabs = [
 
 // 详情页/编辑页属于「库存」这条线，底部要保持在库存上高亮
 const activeTab = computed(() => (route.path.startsWith('/items') ? '/' : route.path));
+
+// 先问一句还认不认得这台手机，免得页面先闪一下内容再被锁屏盖住
+onMounted(async () => {
+  try {
+    const s = await api.session();
+    locked.value = !s.ok;
+  } catch {
+    locked.value = true;
+  } finally {
+    ready.value = true;
+  }
+});
+
+function onUnlocked() {
+  // 各个页面的数据都是在挂载时拉的，整页刷新最省事也最不容易漏
+  location.reload();
+}
 </script>
 
 <template>
-  <RouterView v-slot="{ Component }">
-    <component :is="Component" />
-  </RouterView>
+  <LockScreen v-if="ready && locked" @unlocked="onUnlocked" />
 
-  <nav class="tabbar">
-    <RouterLink v-for="t in tabs" :key="t.to" :to="t.to" :class="{ active: activeTab === t.to }">
-      <span class="ic">{{ t.icon }}</span>
-      <span>{{ t.label }}</span>
-    </RouterLink>
-  </nav>
+  <template v-else-if="ready">
+    <RouterView v-slot="{ Component }">
+      <component :is="Component" />
+    </RouterView>
+
+    <nav class="tabbar">
+      <RouterLink v-for="t in tabs" :key="t.to" :to="t.to" :class="{ active: activeTab === t.to }">
+        <span class="ic">{{ t.icon }}</span>
+        <span>{{ t.label }}</span>
+      </RouterLink>
+    </nav>
+  </template>
 
   <Transition name="toast">
     <div v-if="toastState" class="toast" :class="{ err: toastState.error }">{{ toastState.text }}</div>

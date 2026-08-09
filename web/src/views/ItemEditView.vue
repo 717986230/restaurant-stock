@@ -12,11 +12,15 @@ const isNew = computed(() => id === null);
 const name = ref('');
 const category = ref('');
 const unit = ref('箱');
+const packSize = ref('');
+const packUnit = ref('箱');
 const minStock = ref('0');
 const note = ref('');
 const categories = ref<string[]>([]);
 const saving = ref(false);
 const loading = ref(!!id);
+
+const PACK_UNITS = ['箱', '件', '提', '打', '包', '捆', '板'];
 
 // 常用的排前面：外卖店进货以箱、捆、包、卷为主，重量单位反而少用
 const UNITS = ['箱', '捆', '包', '卷', '提', '盒', '袋', '瓶', '听', '桶', '个', '条', '打', '份', '斤', '公斤', '克'];
@@ -35,6 +39,8 @@ onMounted(async () => {
       name.value = it.name;
       category.value = it.category;
       unit.value = it.unit;
+      packSize.value = it.packSize == null ? '' : String(it.packSize);
+      packUnit.value = it.packUnit ?? '箱';
       minStock.value = String(it.minStock);
       note.value = it.note ?? '';
     } catch (e) {
@@ -55,6 +61,9 @@ async function save() {
     name: name.value.trim(),
     category: category.value.trim() || '其他',
     unit: unit.value.trim() || '箱',
+    // 留空 / 填 0 都表示这件东西不做换算
+    packSize: Number(packSize.value) > 0 ? Number(packSize.value) : null,
+    packUnit: packUnit.value,
     minStock: Number(minStock.value) || 0,
     note: note.value.trim() || null,
   };
@@ -101,11 +110,28 @@ async function save() {
     </label>
 
     <label class="field">
-      <span>计量单位</span>
+      <span>基本单位（库存按它计数）</span>
       <select v-model="unit" class="input">
         <option v-for="u in UNITS" :key="u" :value="u">{{ u }}</option>
       </select>
     </label>
+
+    <div class="field">
+      <span>整箱规格（酒水饮料填这个，系统自动换算）</span>
+      <div class="pack-row">
+        <span class="fixed">1</span>
+        <select v-model="packUnit" class="input">
+          <option v-for="u in PACK_UNITS" :key="u" :value="u">{{ u }}</option>
+        </select>
+        <span class="fixed">=</span>
+        <input v-model="packSize" class="input" type="number" inputmode="numeric" step="1" min="0" placeholder="24" />
+        <span class="fixed">{{ unit }}</span>
+      </div>
+      <small class="muted">
+        比如一箱可乐 24 瓶就填 24。填了之后，入库可以直接按{{ packUnit }}录，列表会显示「共 96 {{ unit }} ＝ 4
+        {{ packUnit }}」。不用换算就留空。
+      </small>
+    </div>
 
     <label class="field">
       <span>低库存阈值（{{ unit }}）</span>
@@ -134,10 +160,41 @@ async function save() {
   padding: 0 6px 0 0;
 }
 
+.field > span {
+  display: block;
+  font-size: 13px;
+  color: var(--muted);
+  margin-bottom: 6px;
+}
+
 .field small {
   display: block;
   margin-top: 6px;
   font-size: 12px;
+  line-height: 1.6;
+}
+
+.pack-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.pack-row .fixed {
+  flex: none;
+  color: var(--muted);
+  font-size: 15px;
+}
+
+.pack-row select.input {
+  flex: 0 0 84px;
+  padding: 12px 8px;
+}
+
+.pack-row input.input {
+  flex: 1;
+  min-width: 0;
+  text-align: center;
 }
 
 textarea.input {
