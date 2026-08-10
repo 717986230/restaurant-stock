@@ -5,6 +5,7 @@ import { api, currentUser } from './api';
 import { toastState } from './toast';
 import AuthView from './views/AuthView.vue';
 import ConfirmDialog from './components/ConfirmDialog.vue';
+import InstallPrompt from './components/InstallPrompt.vue';
 
 const route = useRoute();
 const ready = ref(false);
@@ -51,6 +52,8 @@ function onAuthed() {
         <span>{{ t.label }}</span>
       </RouterLink>
     </nav>
+
+    <InstallPrompt />
   </template>
 
   <Transition name="toast">
