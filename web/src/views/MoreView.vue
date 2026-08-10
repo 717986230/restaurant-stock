@@ -90,7 +90,7 @@ async function copyShoppingList() {
     <h1>⚙️ 更多</h1>
   </header>
 
-  <main class="page">
+  <main class="page with-floating-actions">
     <h2 class="sec">本周补货计划（{{ plans.length }}）</h2>
     <p class="formula">计划库存 − 现有库存；按箱采购的货品会向上取整到整箱。</p>
     <div v-if="loading" class="spinner">加载中…</div>
@@ -111,14 +111,6 @@ async function copyShoppingList() {
         </RouterLink>
       </li>
     </ul>
-    <button v-if="plans.length" class="btn btn-primary btn-block" @click="copyShoppingList">复制补货清单</button>
-
-    <h2 class="sec">数据</h2>
-    <div class="links">
-      <RouterLink to="/items/new" class="link">➕ 新增货品</RouterLink>
-      <a :href="`/api/export.csv?day=${today()}`" class="link">⬇️ 导出当前库存（CSV，可用 Excel 打开）</a>
-    </div>
-
     <h2 class="sec">账号</h2>
     <div class="links">
       <div class="link who">
@@ -133,6 +125,21 @@ async function copyShoppingList() {
       在手机浏览器里选「添加到主屏幕」，用起来跟 App 一样。
     </p>
   </main>
+
+  <div class="floating-actions" aria-label="数据操作">
+    <RouterLink to="/items/new" class="floating-action">
+      <span class="floating-action-icon" aria-hidden="true">＋</span>
+      <span>新增</span>
+    </RouterLink>
+    <button v-if="plans.length" class="floating-action" @click="copyShoppingList">
+      <span class="floating-action-icon" aria-hidden="true">⧉</span>
+      <span>复制清单</span>
+    </button>
+    <a :href="`/api/export.csv?day=${today()}`" class="floating-action primary">
+      <span class="floating-action-icon" aria-hidden="true">↓</span>
+      <span>导出库存</span>
+    </a>
+  </div>
 </template>
 
 <style scoped>

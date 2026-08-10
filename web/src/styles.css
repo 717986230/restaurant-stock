@@ -99,6 +99,14 @@ a {
   padding: 12px 16px 24px;
 }
 
+.page.with-floating-action {
+  padding-bottom: 76px;
+}
+
+.page.with-floating-actions {
+  padding-bottom: 164px;
+}
+
 .muted {
   color: var(--muted);
 }
@@ -211,6 +219,73 @@ a {
 .tabbar .ic {
   font-size: 19px;
   line-height: 1;
+}
+
+/* ---------- 页面悬浮操作 ---------- */
+
+.floating-actions {
+  position: fixed;
+  right: max(12px, env(safe-area-inset-right));
+  bottom: calc(var(--nav-h) + 12px);
+  z-index: 25;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 8px;
+}
+
+.floating-action {
+  min-width: 88px;
+  height: 42px;
+  padding: 0 13px;
+  border: 1px solid var(--line);
+  border-radius: 21px;
+  background: var(--card);
+  color: var(--text);
+  box-shadow: 0 5px 16px rgba(0, 0, 0, 0.16);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  font-size: 13px;
+  font-weight: 650;
+  line-height: 1;
+  white-space: nowrap;
+  transition: transform 150ms ease, box-shadow 150ms ease;
+}
+
+.floating-action.primary {
+  border-color: var(--brand);
+  background: var(--brand);
+  color: #fff;
+  box-shadow: 0 6px 18px rgba(179, 35, 31, 0.32);
+}
+
+.floating-action-icon {
+  font-size: 19px;
+  font-weight: 500;
+  line-height: 1;
+}
+
+.floating-action:hover {
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.2);
+  transform: translateY(-1px);
+}
+
+.floating-action:active {
+  box-shadow: 0 3px 10px rgba(0, 0, 0, 0.14);
+  transform: translateY(1px);
+}
+
+.floating-action:focus-visible {
+  outline: 3px solid var(--brand-soft);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .floating-action {
+    transition: none;
+  }
 }
 
 /* ---------- 提示条 ---------- */

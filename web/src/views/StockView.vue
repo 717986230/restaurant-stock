@@ -174,7 +174,7 @@ function openSheet(item: Item, kind: MoveKind) {
     </div>
   </header>
 
-  <main :class="['page', { selecting }]">
+  <main :class="['page', 'with-floating-action', { selecting }]">
     <div v-if="loading" class="spinner">加载中…</div>
     <div v-else-if="!list.length" class="empty">
       <p>没有符合条件的货品</p>
@@ -235,7 +235,12 @@ function openSheet(item: Item, kind: MoveKind) {
     </section>
   </main>
 
-  <RouterLink v-if="!selecting" to="/items/new" class="fab" aria-label="新增货品">＋</RouterLink>
+  <div v-if="!selecting" class="floating-actions" aria-label="库存操作">
+    <RouterLink to="/items/new" class="floating-action primary">
+      <span class="floating-action-icon" aria-hidden="true">＋</span>
+      <span>新增</span>
+    </RouterLink>
+  </div>
 
   <div v-if="selecting" class="bulk-bar" role="toolbar" aria-label="批量管理货品">
     <button class="btn" @click="endSelection">取消</button>
@@ -556,20 +561,4 @@ function openSheet(item: Item, kind: MoveKind) {
   color: var(--brand);
 }
 
-.fab {
-  position: fixed;
-  right: 16px;
-  bottom: calc(var(--nav-h) + 16px);
-  z-index: 25;
-  width: 54px;
-  height: 54px;
-  border-radius: 50%;
-  background: var(--brand);
-  color: #fff;
-  font-size: 28px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  box-shadow: 0 6px 18px rgba(179, 35, 31, 0.4);
-}
 </style>
