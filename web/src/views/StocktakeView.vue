@@ -2,6 +2,7 @@
 import { computed, onMounted, ref, watch } from 'vue';
 import { api, fmt, packSpec, packText, round3, type Item } from '@/api';
 import { toast, toastError } from '@/toast';
+import { askConfirm } from '@/confirm';
 
 const categories = ref<string[]>([]);
 const category = ref('');
@@ -62,7 +63,11 @@ async function submit() {
     return;
   }
   const changed = pending.value.filter((p) => Math.abs(p.diff) > 0.0005);
-  if (!confirm(`提交 ${pending.value.length} 项盘点，其中 ${changed.length} 项与账面对不上，确定？`)) return;
+  if (!await askConfirm({
+    title: `提交 ${pending.value.length} 项盘点？`,
+    message: `${changed.length} 项与账面数量不同。提交后会为每件货品生成盘点流水并更新库存。`,
+    confirmText: '提交盘点',
+  })) return;
 
   saving.value = true;
   let ok = 0;

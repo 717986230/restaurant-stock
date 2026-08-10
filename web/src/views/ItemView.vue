@@ -5,6 +5,7 @@ import { api, fmt, money, packSpec, packText, round3, type Item, type Move, type
 import { toast, toastError } from '@/toast';
 import ImagePicker from '@/components/ImagePicker.vue';
 import MoveSheet from '@/components/MoveSheet.vue';
+import { askConfirm } from '@/confirm';
 
 const route = useRoute();
 const router = useRouter();
@@ -39,7 +40,12 @@ function openSheet(kind: MoveKind) {
 }
 
 async function undo(m: Move) {
-  if (!confirm(`撤销这条${KIND_LABEL[m.kind]}记录（${fmt(Math.abs(m.qty))} ${m.unit}）？`)) return;
+  if (!await askConfirm({
+    title: `撤销${KIND_LABEL[m.kind]}记录？`,
+    message: `${fmt(Math.abs(m.qty))} ${m.unit} 将从流水中移除，库存会自动恢复到撤销后的数量。`,
+    confirmText: '确认撤销',
+    tone: 'danger',
+  })) return;
   try {
     await api.deleteMove(m.id);
     toast('已撤销');
@@ -51,7 +57,12 @@ async function undo(m: Move) {
 
 async function archive() {
   if (!item.value) return;
-  if (!confirm(`下架「${item.value.name}」？历史流水会保留，之后重新添加同名货品可以恢复。`)) return;
+  if (!await askConfirm({
+    title: `下架「${item.value.name}」？`,
+    message: '下架后不会出现在库存列表中，历史流水仍会保留；重新添加同名货品可以恢复。',
+    confirmText: '确认下架',
+    tone: 'danger',
+  })) return;
   try {
     await api.deleteItem(id);
     toast('已下架');

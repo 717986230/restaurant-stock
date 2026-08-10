@@ -4,6 +4,7 @@ import { RouterLink } from 'vue-router';
 import { api, fmt, money, packText, type Item, type MoveKind, type Summary } from '@/api';
 import { toast, toastError } from '@/toast';
 import MoveSheet from '@/components/MoveSheet.vue';
+import { askConfirm } from '@/confirm';
 
 const list = ref<Item[]>([]);
 const categories = ref<string[]>([]);
@@ -106,7 +107,12 @@ function handleItemClick(event: MouseEvent, id: number) {
 async function bulkArchive() {
   const ids = [...selected.value];
   if (!ids.length || deleting.value) return;
-  if (!confirm(`下架选中的 ${ids.length} 个货品？历史流水会保留，之后重新添加同名货品可以恢复。`)) return;
+  if (!await askConfirm({
+    title: `下架选中的 ${ids.length} 个货品？`,
+    message: '这些货品将从库存列表隐藏，历史流水和图片仍会保留。重新添加同名货品可以恢复。',
+    confirmText: `下架 ${ids.length} 项`,
+    tone: 'danger',
+  })) return;
 
   deleting.value = true;
   try {

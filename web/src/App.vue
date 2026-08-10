@@ -4,6 +4,7 @@ import { computed, onMounted, ref } from 'vue';
 import { api, currentUser } from './api';
 import { toastState } from './toast';
 import AuthView from './views/AuthView.vue';
+import ConfirmDialog from './components/ConfirmDialog.vue';
 
 const route = useRoute();
 const ready = ref(false);
@@ -55,6 +56,8 @@ function onAuthed() {
   <Transition name="toast">
     <div v-if="toastState" class="toast" :class="{ err: toastState.error }">{{ toastState.text }}</div>
   </Transition>
+
+  <ConfirmDialog />
 </template>
 
 <style scoped>

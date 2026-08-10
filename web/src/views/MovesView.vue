@@ -3,6 +3,7 @@ import { computed, onMounted, ref, watch } from 'vue';
 import { RouterLink } from 'vue-router';
 import { api, fmt, money, today, type Move, type MoveKind } from '@/api';
 import { toast, toastError } from '@/toast';
+import { askConfirm } from '@/confirm';
 
 const day = ref(today());
 const moves = ref<Move[]>([]);
@@ -46,7 +47,12 @@ const totals = computed(() => {
 });
 
 async function undo(m: Move) {
-  if (!confirm(`撤销「${m.itemName}」这条${KIND_LABEL[m.kind]}记录？`)) return;
+  if (!await askConfirm({
+    title: `撤销${KIND_LABEL[m.kind]}记录？`,
+    message: `「${m.itemName}」这笔流水将被移除，库存会自动重新计算。`,
+    confirmText: '确认撤销',
+    tone: 'danger',
+  })) return;
   try {
     await api.deleteMove(m.id);
     toast('已撤销');

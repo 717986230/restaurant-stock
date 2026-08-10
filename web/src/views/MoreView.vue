@@ -2,7 +2,8 @@
 import { computed, onMounted, ref } from 'vue';
 import { RouterLink } from 'vue-router';
 import { api, currentUser, fmt, round3, today, type Item } from '@/api';
-import { toastError } from '@/toast';
+import { toast, toastError } from '@/toast';
+import { askConfirm } from '@/confirm';
 
 interface ReplenishmentPlan {
   item: Item;
@@ -41,7 +42,12 @@ onMounted(async () => {
 });
 
 async function logout() {
-  if (!confirm('退出登录？下次打开要重新输账号密码。')) return;
+  if (!await askConfirm({
+    title: '退出当前账号？',
+    message: '这台设备的登录状态会被清除，下次打开需要重新输入账号和密码。',
+    confirmText: '退出登录',
+    tone: 'danger',
+  })) return;
   try {
     await api.logout();
   } catch (e) {
@@ -64,9 +70,17 @@ async function copyShoppingList() {
     .join('\n');
   try {
     await navigator.clipboard.writeText(`【补货清单】\n${text}`);
-    alert('补货清单已复制，可以直接粘贴发给供应商');
+    toast('补货清单已复制');
   } catch {
-    prompt('复制下面的内容：', text);
+    const area = document.createElement('textarea');
+    area.value = text;
+    area.style.position = 'fixed';
+    area.style.opacity = '0';
+    document.body.appendChild(area);
+    area.select();
+    const copied = document.execCommand('copy');
+    area.remove();
+    copied ? toast('补货清单已复制') : toastError(new Error('复制失败，请重试'));
   }
 }
 </script>

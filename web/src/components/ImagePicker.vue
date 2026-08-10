@@ -2,6 +2,7 @@
 import { ref } from 'vue';
 import { api } from '@/api';
 import { toast, toastError } from '@/toast';
+import { askConfirm } from '@/confirm';
 
 const props = defineProps<{ itemId: number; hasImage: boolean }>();
 const emit = defineEmits<{ changed: [hasImage: boolean] }>();
@@ -56,7 +57,12 @@ async function onPick(e: Event) {
 }
 
 async function remove() {
-  if (!confirm('删掉这张图片？')) return;
+  if (!await askConfirm({
+    title: '删除货品图片？',
+    message: '删除后无法恢复，可以稍后重新拍照上传。',
+    confirmText: '删除图片',
+    tone: 'danger',
+  })) return;
   busy.value = true;
   try {
     await api.deleteImage(props.itemId);
