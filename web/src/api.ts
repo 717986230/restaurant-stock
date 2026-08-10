@@ -14,6 +14,10 @@ export interface Item {
   /** 大单位名，如「箱」 */
   packUnit: string | null;
   minStock: number;
+  /** 每周补货后希望达到的基本单位库存；0 表示不加入补货计划 */
+  weeklyTarget: number;
+  /** 默认存放仓位名称 */
+  locationName: string | null;
   lastPrice: number | null;
   hasImage: boolean;
   note: string | null;
@@ -130,6 +134,13 @@ export const api = {
   deleteItem(id: number) {
     return request<{ ok: true }>(`/items/${id}`, { method: 'DELETE' });
   },
+  bulkDeleteItems(ids: number[]) {
+    return request<{ ok: true; archived: number; skipped: number }>('/items/bulk-archive', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ ids }),
+    });
+  },
   async uploadImage(id: number, file: Blob) {
     const form = new FormData();
     form.append('file', file, 'photo.jpg');
@@ -153,11 +164,13 @@ export const api = {
     unitPrice?: number | null;
     note?: string | null;
     operator?: string | null;
+    requestId?: string;
+    referenceNo?: string | null;
   }) {
     return request<{ ok: true; itemName: string; unit: string; stock: number; status: StockStatus }>('/moves', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ ...body, day: today() }),
+      body: JSON.stringify({ requestId: crypto.randomUUID(), ...body, day: today() }),
     });
   },
   deleteMove(id: number) {

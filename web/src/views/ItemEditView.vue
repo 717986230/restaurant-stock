@@ -15,6 +15,7 @@ const unit = ref('箱');
 const packSize = ref('');
 const packUnit = ref('箱');
 const minStock = ref('0');
+const weeklyTarget = ref('0');
 const note = ref('');
 const categories = ref<string[]>([]);
 const saving = ref(false);
@@ -42,6 +43,7 @@ onMounted(async () => {
       packSize.value = it.packSize == null ? '' : String(it.packSize);
       packUnit.value = it.packUnit ?? '箱';
       minStock.value = String(it.minStock);
+      weeklyTarget.value = String(it.weeklyTarget);
       note.value = it.note ?? '';
     } catch (e) {
       toastError(e);
@@ -65,6 +67,7 @@ async function save() {
     packSize: Number(packSize.value) > 0 ? Number(packSize.value) : null,
     packUnit: packUnit.value,
     minStock: Number(minStock.value) || 0,
+    weeklyTarget: Number(weeklyTarget.value) || 0,
     note: note.value.trim() || null,
   };
   try {
@@ -137,6 +140,12 @@ async function save() {
       <span>低库存阈值（{{ unit }}）</span>
       <input v-model="minStock" class="input" type="number" inputmode="decimal" step="0.001" min="0" />
       <small class="muted">结存降到这个数以下，列表里会标红提醒。填 0 表示只在用光时提醒。</small>
+    </label>
+
+    <label class="field">
+      <span>每周计划库存（{{ unit }}）</span>
+      <input v-model="weeklyTarget" class="input" type="number" inputmode="decimal" step="0.001" min="0" />
+      <small class="muted">补货量按“每周计划库存 − 当前库存”计算；有整箱规格时会向上取整到整箱。填 0 表示不加入补货清单。</small>
     </label>
 
     <label class="field">

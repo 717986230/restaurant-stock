@@ -13,7 +13,8 @@ export const items = new Hono<AppEnv>();
 
 const ITEM_SELECT = `
   select i.id, i.name, i.category, i.unit, i.pack_size, i.pack_unit,
-         i.min_stock, i.last_price, i.has_image, i.note,
+         i.min_stock, i.weekly_target, i.last_price, i.has_image, i.note,
+         (select l.name from storage_locations l where l.id = i.default_location_id and l.user_id = i.user_id) as location_name,
          coalesce((select sum(m.qty) from stock_moves m where m.item_id = i.id), 0) as stock
   from items i
 `;
@@ -60,6 +61,44 @@ items.get('/categories', async (c) => {
   return c.json(results.map((r) => r.category));
 });
 
+/** 批量下架：库存流水和图片仍保留，重新添加同名货品时可以恢复。 */
+items.post('/bulk-archive', async (c) => {
+  const body: { ids?: unknown } = await c.req.json<{ ids?: unknown }>().catch(() => ({}));
+  if (!Array.isArray(body.ids) || body.ids.length === 0) {
+    throw new ApiError(400, '请至少选择一个货品');
+  }
+  if (body.ids.length > 100) throw new ApiError(400, '一次最多下架 100 个货品');
+
+  const ids: number[] = [];
+  const seen = new Set<number>();
+  for (const raw of body.ids) {
+    if (typeof raw !== 'number' || !Number.isInteger(raw) || raw < 1) {
+      throw new ApiError(400, '货品编号格式不正确');
+    }
+    if (!seen.has(raw)) {
+      seen.add(raw);
+      ids.push(raw);
+    }
+  }
+
+  const placeholders = ids.map(() => '?').join(',');
+  const binds = [c.var.userId, ...ids];
+  const [, archived] = await c.env.DB.batch([
+    c.env.DB.prepare(
+      `insert into audit_events (user_id, entity_type, entity_id, action, summary)
+       select user_id, 'item', id, 'ARCHIVE', name
+       from items where user_id = ? and archived = 0 and id in (${placeholders})`,
+    ).bind(...binds),
+    c.env.DB.prepare(
+      `update items set archived = 1, archived_at = datetime('now'), updated_at = datetime('now')
+       where user_id = ? and archived = 0 and id in (${placeholders})`,
+    ).bind(...binds),
+  ]);
+
+  const count = archived.meta.changes ?? 0;
+  return c.json({ ok: true, archived: count, skipped: ids.length - count });
+});
+
 items.get('/:id', async (c) => {
   const id = Number(c.req.param('id'));
   const row = await c.env.DB.prepare(`${ITEM_SELECT} where i.id = ? and i.user_id = ?`).bind(id, c.var.userId).first<ItemRow>();
@@ -73,6 +112,10 @@ items.post('/', async (c) => {
   const category = optionalText(body.category, 40) ?? '其他';
   const unit = optionalText(body.unit, 16) ?? '箱';
   const minStock = body.minStock === undefined ? 0 : requireNumber(body.minStock, '低库存阈值', { min: 0 });
+  // 旧版客户端还没有 weeklyTarget；沿用旧算法作为初始值，避免升级后清单突然为空。
+  const weeklyTarget = body.weeklyTarget === undefined
+    ? minStock * 2
+    : requireNumber(body.weeklyTarget, '每周计划库存', { min: 0 });
   const note = optionalText(body.note, 255);
   const pack = readPack(body);
 
@@ -82,21 +125,34 @@ items.post('/', async (c) => {
   if (existing) {
     if (existing.archived === 0) throw new ApiError(409, `「${name}」已经存在了`);
     // 之前删掉过同名货品：复用这条记录，历史流水也就跟着回来了
-    await c.env.DB.prepare(
+    await c.env.DB.batch([
+      c.env.DB.prepare(
       `update items set archived = 0, category = ?, unit = ?, pack_size = ?, pack_unit = ?,
-                        min_stock = ?, note = ? where id = ? and user_id = ?`,
-    )
-      .bind(category, unit, pack.size, pack.unit, minStock, note, existing.id, c.var.userId)
-      .run();
+                        min_stock = ?, weekly_target = ?, note = ?, archived_at = null, updated_at = datetime('now')
+        where id = ? and user_id = ?`,
+      ).bind(category, unit, pack.size, pack.unit, minStock, weeklyTarget, note, existing.id, c.var.userId),
+      c.env.DB.prepare(
+        `insert into audit_events (user_id, entity_type, entity_id, action, summary)
+         values (?, 'item', ?, 'RESTORE', ?)`,
+      ).bind(c.var.userId, existing.id, name),
+    ]);
     return c.json({ id: existing.id, restored: true }, 201);
   }
 
-  const res = await c.env.DB.prepare(
-    'insert into items (user_id, name, category, unit, pack_size, pack_unit, min_stock, note) values (?, ?, ?, ?, ?, ?, ?, ?)',
-  )
-    .bind(c.var.userId, name, category, unit, pack.size, pack.unit, minStock, note)
-    .run();
-  return c.json({ id: res.meta.last_row_id, restored: false }, 201);
+  const [res] = await c.env.DB.batch([
+    c.env.DB.prepare(
+      `insert into items
+         (user_id, name, category, unit, pack_size, pack_unit, min_stock, weekly_target, note, default_location_id)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?,
+               (select id from storage_locations where user_id = ? and name = '主仓'))`,
+    ).bind(c.var.userId, name, category, unit, pack.size, pack.unit, minStock, weeklyTarget, note, c.var.userId),
+    c.env.DB.prepare(
+      `insert into audit_events (user_id, entity_type, entity_id, action, summary)
+       select ?, 'item', id, 'CREATE', ? from items where user_id = ? and name = ?`,
+    ).bind(c.var.userId, name, c.var.userId, name),
+  ]);
+  const id = Number(res.meta.last_row_id);
+  return c.json({ id, restored: false }, 201);
 });
 
 items.put('/:id', async (c) => {
@@ -106,6 +162,10 @@ items.put('/:id', async (c) => {
   const category = optionalText(body.category, 40) ?? '其他';
   const unit = optionalText(body.unit, 16) ?? '箱';
   const minStock = requireNumber(body.minStock ?? 0, '低库存阈值', { min: 0 });
+  // null 只用于 SQL 的“保持原值”；显式提交 0 仍表示从补货计划中移除。
+  const weeklyTarget = body.weeklyTarget === undefined
+    ? null
+    : requireNumber(body.weeklyTarget, '每周计划库存', { min: 0 });
   const note = optionalText(body.note, 255);
   const pack = readPack(body);
 
@@ -114,12 +174,17 @@ items.put('/:id', async (c) => {
     .first<{ id: number }>();
   if (clash) throw new ApiError(409, `「${name}」已经存在了`);
 
-  const res = await c.env.DB.prepare(
-    `update items set name = ?, category = ?, unit = ?, pack_size = ?, pack_unit = ?,
-                      min_stock = ?, note = ? where id = ? and user_id = ? and archived = 0`,
-  )
-    .bind(name, category, unit, pack.size, pack.unit, minStock, note, id, c.var.userId)
-    .run();
+  const [res] = await c.env.DB.batch([
+    c.env.DB.prepare(
+      `update items set name = ?, category = ?, unit = ?, pack_size = ?, pack_unit = ?,
+                        min_stock = ?, weekly_target = coalesce(?, weekly_target), note = ?, updated_at = datetime('now')
+       where id = ? and user_id = ? and archived = 0`,
+    ).bind(name, category, unit, pack.size, pack.unit, minStock, weeklyTarget, note, id, c.var.userId),
+    c.env.DB.prepare(
+      `insert into audit_events (user_id, entity_type, entity_id, action, summary)
+       select ?, 'item', id, 'UPDATE', ? from items where id = ? and user_id = ? and archived = 0`,
+    ).bind(c.var.userId, name, id, c.var.userId),
+  ]);
   if (res.meta.changes === 0) throw new ApiError(404, '货品不存在');
   return c.json({ ok: true });
 });
@@ -127,7 +192,19 @@ items.put('/:id', async (c) => {
 /** 软删除：流水是账，不能因为下架一个货品就凭空消失 */
 items.delete('/:id', async (c) => {
   const id = Number(c.req.param('id'));
-  const res = await c.env.DB.prepare('update items set archived = 1 where id = ? and user_id = ?').bind(id, c.var.userId).run();
+  const item = await c.env.DB.prepare('select name from items where id = ? and user_id = ? and archived = 0')
+    .bind(id, c.var.userId)
+    .first<{ name: string }>();
+  if (!item) throw new ApiError(404, '货品不存在');
+  const [res] = await c.env.DB.batch([
+    c.env.DB.prepare(
+      "update items set archived = 1, archived_at = datetime('now'), updated_at = datetime('now') where id = ? and user_id = ?",
+    ).bind(id, c.var.userId),
+    c.env.DB.prepare(
+      `insert into audit_events (user_id, entity_type, entity_id, action, summary)
+       values (?, 'item', ?, 'ARCHIVE', ?)`,
+    ).bind(c.var.userId, id, item.name),
+  ]);
   if (res.meta.changes === 0) throw new ApiError(404, '货品不存在');
   return c.json({ ok: true });
 });
@@ -174,7 +251,7 @@ items.post('/:id/image', async (c) => {
       `insert into item_images (item_id, mime, bytes, updated_at) values (?, ?, ?, datetime('now'))
        on conflict (item_id) do update set mime = excluded.mime, bytes = excluded.bytes, updated_at = excluded.updated_at`,
     ).bind(id, file.type, bytes),
-    c.env.DB.prepare('update items set has_image = 1 where id = ? and user_id = ?').bind(id, c.var.userId),
+    c.env.DB.prepare("update items set has_image = 1, updated_at = datetime('now') where id = ? and user_id = ?").bind(id, c.var.userId),
   ]);
 
   return c.json({ ok: true, url: `/api/items/${id}/image?t=${Date.now()}` });
@@ -188,7 +265,7 @@ items.delete('/:id/image', async (c) => {
   if (!own) throw new ApiError(404, '货品不存在');
   await c.env.DB.batch([
     c.env.DB.prepare('delete from item_images where item_id = ?').bind(id),
-    c.env.DB.prepare('update items set has_image = 0 where id = ?').bind(id),
+    c.env.DB.prepare("update items set has_image = 0, updated_at = datetime('now') where id = ?").bind(id),
   ]);
   return c.json({ ok: true });
 });

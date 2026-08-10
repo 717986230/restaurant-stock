@@ -21,6 +21,8 @@ export interface ItemRow {
   pack_size: number | null;
   pack_unit: string | null;
   min_stock: number;
+  weekly_target: number;
+  location_name: string | null;
   last_price: number | null;
   has_image: number;
   note: string | null;
@@ -38,6 +40,10 @@ export interface ItemDto {
   /** 大单位名，如「箱」 */
   packUnit: string | null;
   minStock: number;
+  /** 每周补货后希望达到的基本单位库存；0 表示不加入补货计划 */
+  weeklyTarget: number;
+  /** 默认存放仓位名称 */
+  locationName: string | null;
   lastPrice: number | null;
   hasImage: boolean;
   note: string | null;
@@ -65,6 +71,8 @@ export function toItemDto(row: ItemRow): ItemDto {
     packSize: row.pack_size,
     packUnit: row.pack_unit,
     minStock: row.min_stock,
+    weeklyTarget: row.weekly_target,
+    locationName: row.location_name,
     lastPrice: row.last_price,
     hasImage: row.has_image === 1,
     note: row.note,

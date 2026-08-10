@@ -115,15 +115,19 @@ async function recordFail(env: Env, ip: string, fails: number): Promise<number> 
   return MAX_FAILS - next;
 }
 
-async function startSession(env: Env, userId: number): Promise<string> {
+async function startSession(env: Env, userId: number, userAgent: string | null): Promise<string> {
   const token = randomHex(32);
   const expires = new Date(Date.now() + SESSION_DAYS * 86400_000).toISOString();
   await env.DB.batch([
     // 库里只存令牌的哈希：即使数据库内容外泄，也没法拿去冒充登录
-    env.DB.prepare('insert into sessions (token_hash, user_id, expires_at) values (?, ?, ?)').bind(
+    env.DB.prepare(
+      `insert into sessions (token_hash, user_id, expires_at, user_agent, last_seen_at)
+       values (?, ?, ?, ?, datetime('now'))`,
+    ).bind(
       await sha256Hex(token),
       userId,
       expires,
+      userAgent,
     ),
     env.DB.prepare("delete from sessions where expires_at < datetime('now')"),
   ]);
@@ -192,15 +196,24 @@ export function registerAuthRoutes(app: Hono<AppEnv>) {
 
     const userId = Number(res.meta.last_row_id);
     // 新账号先铺一套常备物料，省得对着空列表一件件手输
-    await c.env.DB.batch(
-      SEED_ITEMS.map((s) =>
+    await c.env.DB.batch([
+      c.env.DB.prepare("insert into storage_locations (user_id, name, note) values (?, '主仓', '系统默认仓位')").bind(userId),
+      ...SEED_ITEMS.map((s) =>
         c.env.DB.prepare(
-          'insert into items (user_id, name, category, unit, pack_size, pack_unit, min_stock) values (?, ?, ?, ?, ?, ?, ?)',
-        ).bind(userId, s.name, s.category, s.unit, s.packSize ?? null, s.packUnit ?? null, s.minStock),
+          `insert into items
+             (user_id, name, category, unit, pack_size, pack_unit, min_stock, weekly_target, default_location_id)
+           values (?, ?, ?, ?, ?, ?, ?, ?,
+                   (select id from storage_locations where user_id = ? and name = '主仓'))`,
+        ).bind(userId, s.name, s.category, s.unit, s.packSize ?? null, s.packUnit ?? null, s.minStock, s.minStock * 2, userId),
       ),
-    );
+      c.env.DB.prepare('insert into user_settings (user_id, store_name) values (?, ?)').bind(userId, `${displayName}的门店`),
+      c.env.DB.prepare(
+        `insert into audit_events (user_id, entity_type, entity_id, action, summary)
+         values (?, 'account', ?, 'REGISTER', '创建账号')`,
+      ).bind(userId, userId),
+    ]);
 
-    const token = await startSession(c.env, userId);
+    const token = await startSession(c.env, userId, optionalUserAgent(c.req.header('user-agent')));
     setCookie(c, COOKIE_NAME, token, sessionCookieOptions(c.req.url));
     return c.json({ ok: true, user: { id: userId, username, displayName }, seeded: SEED_ITEMS.length }, 201);
   });
@@ -231,8 +244,15 @@ export function registerAuthRoutes(app: Hono<AppEnv>) {
       throw new ApiError(401, left > 0 ? `用户名或密码不对，还可以试 ${left} 次` : '尝试太多次了，请稍后再试');
     }
 
-    await c.env.DB.prepare('delete from login_guard where ip = ?').bind(ip).run();
-    const token = await startSession(c.env, user.id);
+    await c.env.DB.batch([
+      c.env.DB.prepare('delete from login_guard where ip = ?').bind(ip),
+      c.env.DB.prepare("update users set last_login_at = datetime('now'), updated_at = datetime('now') where id = ?").bind(user.id),
+      c.env.DB.prepare(
+        `insert into audit_events (user_id, entity_type, entity_id, action, summary)
+         values (?, 'account', ?, 'LOGIN', '账号登录')`,
+      ).bind(user.id, user.id),
+    ]);
+    const token = await startSession(c.env, user.id, optionalUserAgent(c.req.header('user-agent')));
     setCookie(c, COOKIE_NAME, token, sessionCookieOptions(c.req.url));
     return c.json({
       ok: true,
@@ -248,4 +268,9 @@ export function registerAuthRoutes(app: Hono<AppEnv>) {
     deleteCookie(c, COOKIE_NAME, { path: '/' });
     return c.json({ ok: true });
   });
+}
+
+function optionalUserAgent(value: string | undefined): string | null {
+  const text = value?.trim();
+  return text ? text.slice(0, 255) : null;
 }

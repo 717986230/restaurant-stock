@@ -1,15 +1,38 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { computed, onMounted, ref } from 'vue';
 import { RouterLink } from 'vue-router';
-import { api, currentUser, fmt, today, type Item } from '@/api';
+import { api, currentUser, fmt, round3, today, type Item } from '@/api';
 import { toastError } from '@/toast';
 
-const alerts = ref<Item[]>([]);
+interface ReplenishmentPlan {
+  item: Item;
+  needed: number;
+  orderQty: number;
+  packs: number | null;
+}
+
+const items = ref<Item[]>([]);
 const loading = ref(true);
+
+const plans = computed<ReplenishmentPlan[]>(() =>
+  items.value
+    .filter((item) => item.weeklyTarget > item.stock)
+    .map((item) => {
+      const needed = round3(item.weeklyTarget - item.stock);
+      const packs = item.packSize ? Math.ceil(needed / item.packSize) : null;
+      return {
+        item,
+        needed,
+        orderQty: packs === null ? needed : round3(packs * item.packSize!),
+        packs,
+      };
+    })
+    .sort((a, b) => a.item.category.localeCompare(b.item.category, 'zh-CN') || a.item.name.localeCompare(b.item.name, 'zh-CN')),
+);
 
 onMounted(async () => {
   try {
-    alerts.value = await api.items({ low: true });
+    items.value = await api.items();
   } catch (e) {
     toastError(e);
   } finally {
@@ -30,9 +53,14 @@ async function logout() {
 
 /** 补货清单直接生成一段可以粘进微信发给供应商的文本 */
 async function copyShoppingList() {
-  if (!alerts.value.length) return;
-  const text = alerts.value
-    .map((it) => `${it.name}（现有 ${fmt(it.stock)}${it.unit}，建议补到 ${fmt(Math.max(it.minStock * 2, 1))}${it.unit}）`)
+  if (!plans.value.length) return;
+  const text = plans.value
+    .map(({ item, orderQty, packs }) => {
+      const amount = packs === null
+        ? `${fmt(orderQty)}${item.unit}`
+        : `${packs}${item.packUnit}（${fmt(orderQty)}${item.unit}）`;
+      return `${item.name}：补 ${amount}；现有 ${fmt(item.stock)}${item.unit}，周计划 ${fmt(item.weeklyTarget)}${item.unit}`;
+    })
     .join('\n');
   try {
     await navigator.clipboard.writeText(`【补货清单】\n${text}`);
@@ -49,21 +77,27 @@ async function copyShoppingList() {
   </header>
 
   <main class="page">
-    <h2 class="sec">需要补货（{{ alerts.length }}）</h2>
+    <h2 class="sec">本周补货计划（{{ plans.length }}）</h2>
+    <p class="formula">计划库存 − 现有库存；按箱采购的货品会向上取整到整箱。</p>
     <div v-if="loading" class="spinner">加载中…</div>
-    <p v-else-if="!alerts.length" class="ok-box">目前所有货品库存都正常 👍</p>
+    <p v-else-if="!plans.length" class="ok-box">当前库存已经达到本周计划。</p>
     <ul v-else class="alerts">
-      <li v-for="it in alerts" :key="it.id" :class="it.status.toLowerCase()">
-        <RouterLink :to="`/items/${it.id}`">
-          <span class="name">{{ it.name }}</span>
+      <li v-for="plan in plans" :key="plan.item.id" :class="plan.item.status.toLowerCase()">
+        <RouterLink :to="`/items/${plan.item.id}`">
+          <span class="plan-head">
+            <span class="name">{{ plan.item.name }}</span>
+            <strong class="order">
+              补 {{ plan.packs === null ? `${fmt(plan.orderQty)} ${plan.item.unit}` : `${plan.packs} ${plan.item.packUnit}` }}
+            </strong>
+          </span>
           <span class="small">
-            现有 {{ fmt(it.stock) }} {{ it.unit }}
-            <template v-if="it.minStock > 0">／阈值 {{ fmt(it.minStock) }}</template>
+            现有 {{ fmt(plan.item.stock) }} {{ plan.item.unit }}／周计划 {{ fmt(plan.item.weeklyTarget) }} {{ plan.item.unit }}
+            <template v-if="plan.packs !== null">／实际到货 {{ fmt(plan.orderQty) }} {{ plan.item.unit }}</template>
           </span>
         </RouterLink>
       </li>
     </ul>
-    <button v-if="alerts.length" class="btn btn-block" @click="copyShoppingList">复制补货清单</button>
+    <button v-if="plans.length" class="btn btn-primary btn-block" @click="copyShoppingList">复制补货清单</button>
 
     <h2 class="sec">数据</h2>
     <div class="links">
@@ -99,6 +133,13 @@ async function copyShoppingList() {
   margin-top: 0;
 }
 
+.formula {
+  margin: -2px 0 10px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
 .ok-box {
   background: var(--ok-soft);
   color: var(--ok);
@@ -132,9 +173,21 @@ async function copyShoppingList() {
 }
 
 .alerts .name {
-  display: block;
   font-weight: 600;
   font-size: 15px;
+}
+
+.plan-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.order {
+  flex: none;
+  color: var(--accent);
+  font-size: 14px;
 }
 
 .alerts .small {

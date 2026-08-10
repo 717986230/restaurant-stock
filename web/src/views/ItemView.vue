@@ -96,6 +96,7 @@ function timeOf(iso: string): string {
         <span class="muted small">
           {{ item.category }}
           <template v-if="item.minStock > 0">　低于 {{ fmt(item.minStock) }} {{ item.unit }} 提醒</template>
+          <template v-if="item.weeklyTarget > 0">　每周计划 {{ fmt(item.weeklyTarget) }} {{ item.unit }}</template>
           <template v-if="item.lastPrice != null">
             　最近进价 ¥{{ item.lastPrice }}/{{ item.unit }}
             <template v-if="item.packSize">（≈¥{{ fmt(round3(item.lastPrice * item.packSize)) }}/{{ item.packUnit }}）</template>
