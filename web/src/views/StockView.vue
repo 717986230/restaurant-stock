@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
 import { RouterLink } from 'vue-router';
-import { api, fmt, packText, type Item, type MoveKind, type Summary } from '@/api';
+import { api, fmt, money, packText, type Item, type MoveKind, type Summary } from '@/api';
 import { toast, toastError } from '@/toast';
 import MoveSheet from '@/components/MoveSheet.vue';
 
@@ -205,7 +205,7 @@ function openSheet(item: Item, kind: MoveKind) {
                 <span v-if="it.minStock > 0" class="muted small">／低于 {{ fmt(it.minStock) }} 提醒</span>
               </div>
               <div v-if="it.lastPrice != null || it.locationName" class="details">
-                <span v-if="it.lastPrice != null">最近进价 {{ fmt(it.lastPrice) }} / {{ it.unit }}</span>
+                <span v-if="it.lastPrice != null">最近进价 {{ money(it.lastPrice) }} / {{ it.unit }}</span>
                 <span v-if="it.locationName">位置 {{ it.locationName }}</span>
               </div>
             </div>
@@ -221,8 +221,8 @@ function openSheet(item: Item, kind: MoveKind) {
             <span class="checkmark" aria-hidden="true">{{ selected.has(it.id) ? '✓' : '' }}</span>
           </button>
           <div v-else class="ops">
-            <button class="op in" @click="openSheet(it, 'IN')" aria-label="入库">＋</button>
-            <button class="op out" @click="openSheet(it, 'OUT')" aria-label="出库">－</button>
+            <button class="op in" @click="openSheet(it, 'IN')" :aria-label="`${it.name}入库`">＋</button>
+            <button class="op out" @click="openSheet(it, 'OUT')" :aria-label="`${it.name}出库`">－</button>
           </div>
         </li>
       </ul>

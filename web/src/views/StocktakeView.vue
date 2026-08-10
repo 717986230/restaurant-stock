@@ -126,6 +126,7 @@ async function submit() {
               step="1"
               min="0"
               placeholder="0"
+              :aria-label="`${it.name}整${it.packUnit}数量`"
             />
             <span>{{ it.packUnit }}</span>
           </label>
@@ -138,6 +139,7 @@ async function submit() {
               step="0.001"
               min="0"
               placeholder="0"
+              :aria-label="`${it.name}${it.unit}数量`"
             />
             <span>{{ it.unit }}</span>
           </label>
@@ -239,6 +241,7 @@ async function submit() {
 
 .inputs {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 10px;
   margin-top: 8px;
@@ -262,6 +265,7 @@ async function submit() {
 }
 
 .sum {
+  flex: 1 1 100%;
   font-size: 13px;
   color: var(--brand);
   font-weight: 600;

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref, watch } from 'vue';
 import { RouterLink } from 'vue-router';
-import { api, fmt, today, type Move, type MoveKind } from '@/api';
+import { api, fmt, money, today, type Move, type MoveKind } from '@/api';
 import { toast, toastError } from '@/toast';
 
 const day = ref(today());
@@ -72,7 +72,7 @@ function timeOf(iso: string): string {
     </div>
     <div class="stats muted small">
       入库 {{ totals.inCount }} 笔 · 出库 {{ totals.outCount }} 笔
-      <span v-if="totals.cost > 0">· 当日进货金额 ¥{{ totals.cost }}</span>
+      <span v-if="totals.cost > 0">· 当日进货金额 {{ money(totals.cost) }}</span>
     </div>
   </header>
 
@@ -87,14 +87,14 @@ function timeOf(iso: string): string {
           <span class="detail muted small">
             {{ timeOf(m.createdAt) }}　{{ KIND_LABEL[m.kind] }}
             <template v-if="m.kind === 'CHECK' && m.countedQty != null">　盘后 {{ fmt(m.countedQty) }}</template>
-            <template v-if="m.unitPrice != null">　¥{{ m.unitPrice }}/{{ m.unit }}</template>
+            <template v-if="m.unitPrice != null">　{{ money(m.unitPrice) }}/{{ m.unit }}</template>
             <template v-if="m.note">　{{ m.note }}</template>
           </span>
         </RouterLink>
         <span class="delta" :class="{ minus: m.qty < 0 }">
           {{ m.qty > 0 ? '+' : '' }}{{ fmt(m.qty) }} {{ m.unit }}
         </span>
-        <button class="undo" @click="undo(m)">撤销</button>
+        <button class="undo" :aria-label="`撤销${m.itemName}${KIND_LABEL[m.kind]}记录`" @click="undo(m)">撤销</button>
       </li>
     </ul>
   </main>

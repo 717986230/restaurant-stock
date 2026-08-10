@@ -16,8 +16,10 @@ const packSize = ref('');
 const packUnit = ref('箱');
 const minStock = ref('0');
 const weeklyTarget = ref('0');
+const locationName = ref('主仓');
 const note = ref('');
 const categories = ref<string[]>([]);
+const locations = ref<string[]>([]);
 const saving = ref(false);
 const loading = ref(!!id);
 
@@ -28,7 +30,7 @@ const UNITS = ['箱', '捆', '包', '卷', '提', '盒', '袋', '瓶', '听', '�
 
 onMounted(async () => {
   try {
-    categories.value = await api.categories();
+    [categories.value, locations.value] = await Promise.all([api.categories(), api.locations()]);
     if (!isNew.value) category.value = '';
     else category.value = categories.value[0] ?? '其他';
   } catch {
@@ -44,6 +46,7 @@ onMounted(async () => {
       packUnit.value = it.packUnit ?? '箱';
       minStock.value = String(it.minStock);
       weeklyTarget.value = String(it.weeklyTarget);
+      locationName.value = it.locationName ?? '主仓';
       note.value = it.note ?? '';
     } catch (e) {
       toastError(e);
@@ -68,6 +71,7 @@ async function save() {
     packUnit: packUnit.value,
     minStock: Number(minStock.value) || 0,
     weeklyTarget: Number(weeklyTarget.value) || 0,
+    locationName: locationName.value.trim() || '主仓',
     note: note.value.trim() || null,
   };
   try {
@@ -117,6 +121,15 @@ async function save() {
       <select v-model="unit" class="input">
         <option v-for="u in UNITS" :key="u" :value="u">{{ u }}</option>
       </select>
+    </label>
+
+    <label class="field">
+      <span>存放位置</span>
+      <input v-model="locationName" class="input" list="location-options" placeholder="主仓 / 冷库 / 吧台…" />
+      <datalist id="location-options">
+        <option v-for="location in locations" :key="location" :value="location" />
+      </datalist>
+      <small class="muted">可以选择已有位置，也可以直接输入新位置。</small>
     </label>
 
     <div class="field">

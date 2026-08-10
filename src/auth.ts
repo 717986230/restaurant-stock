@@ -161,14 +161,15 @@ export function registerAuthRoutes(app: Hono<AppEnv>) {
     const token = getCookie(c, COOKIE_NAME);
     if (!token) return c.json({ ok: false });
     const row = await c.env.DB.prepare(
-      `select u.id, u.username, u.display_name from sessions s
+      `select u.id, u.username, u.display_name, coalesce(us.currency, 'EUR') as currency from sessions s
        join users u on u.id = s.user_id
+       left join user_settings us on us.user_id = u.id
        where s.token_hash = ? and s.expires_at > datetime('now')`,
     )
       .bind(await sha256Hex(token))
-      .first<{ id: number; username: string; display_name: string }>();
+      .first<{ id: number; username: string; display_name: string; currency: string }>();
     if (!row) return c.json({ ok: false });
-    return c.json({ ok: true, user: { id: row.id, username: row.username, displayName: row.display_name } });
+    return c.json({ ok: true, user: { id: row.id, username: row.username, displayName: row.display_name, currency: row.currency } });
   });
 
   app.post('/api/register', async (c) => {
@@ -215,7 +216,7 @@ export function registerAuthRoutes(app: Hono<AppEnv>) {
 
     const token = await startSession(c.env, userId, optionalUserAgent(c.req.header('user-agent')));
     setCookie(c, COOKIE_NAME, token, sessionCookieOptions(c.req.url));
-    return c.json({ ok: true, user: { id: userId, username, displayName }, seeded: SEED_ITEMS.length }, 201);
+    return c.json({ ok: true, user: { id: userId, username, displayName, currency: 'EUR' }, seeded: SEED_ITEMS.length }, 201);
   });
 
   app.post('/api/login', async (c) => {
@@ -225,7 +226,9 @@ export function registerAuthRoutes(app: Hono<AppEnv>) {
     const clientKey = requireClientKey(body.key);
 
     const user = await c.env.DB.prepare(
-      'select id, username, display_name, salt, pass_hash, iterations from users where username = ?',
+      `select u.id, u.username, u.display_name, u.salt, u.pass_hash, u.iterations,
+              coalesce(us.currency, 'EUR') as currency
+       from users u left join user_settings us on us.user_id = u.id where u.username = ?`,
     )
       .bind(username)
       .first<{
@@ -235,6 +238,7 @@ export function registerAuthRoutes(app: Hono<AppEnv>) {
         salt: string;
         pass_hash: string;
         iterations: number;
+        currency: string;
       }>();
 
     // 用户名不存在和密码错误返回同一句话，免得被人拿来枚举有哪些账号
@@ -256,7 +260,7 @@ export function registerAuthRoutes(app: Hono<AppEnv>) {
     setCookie(c, COOKIE_NAME, token, sessionCookieOptions(c.req.url));
     return c.json({
       ok: true,
-      user: { id: user.id, username: user.username, displayName: user.display_name },
+      user: { id: user.id, username: user.username, displayName: user.display_name, currency: user.currency },
     });
   });
 

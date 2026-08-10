@@ -55,6 +55,7 @@ export interface User {
   id: number;
   username: string;
   displayName: string;
+  currency: string;
 }
 
 /** null 表示没登录，App 会盖上登录页；任何一个接口 401 都会把它清掉 */
@@ -116,6 +117,9 @@ export const api = {
   },
   categories() {
     return request<string[]>('/items/categories');
+  },
+  locations() {
+    return request<string[]>('/items/locations');
   },
   createItem(body: Partial<Item>) {
     return request<{ id: number; restored: boolean }>('/items', {
@@ -188,6 +192,21 @@ export function imageUrl(item: Pick<Item, 'id' | 'hasImage'>): string | null {
 const NUMBER_FORMAT = new Intl.NumberFormat('zh-CN', { maximumFractionDigits: 3 });
 export function fmt(n: number): string {
   return NUMBER_FORMAT.format(n);
+}
+
+const MONEY_FORMATS = new Map<string, Intl.NumberFormat>();
+export function money(n: number): string {
+  const currency = currentUser.value?.currency ?? 'EUR';
+  let formatter = MONEY_FORMATS.get(currency);
+  if (!formatter) {
+    try {
+      formatter = new Intl.NumberFormat('zh-CN', { style: 'currency', currency });
+    } catch {
+      formatter = new Intl.NumberFormat('zh-CN', { style: 'currency', currency: 'EUR' });
+    }
+    MONEY_FORMATS.set(currency, formatter);
+  }
+  return formatter.format(n);
 }
 
 export function round3(n: number): number {

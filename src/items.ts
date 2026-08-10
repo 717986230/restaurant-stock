@@ -27,6 +27,21 @@ function readPack(body: Record<string, unknown>): { size: number | null; unit: s
   return { size, unit: optionalText(body.packUnit, 16) ?? '箱' };
 }
 
+/** 输入新仓位名时就地创建；唯一键保证同一账号不会出现两个同名仓位。 */
+async function ensureLocation(db: D1Database, userId: number, rawName: unknown): Promise<number> {
+  const name = optionalText(rawName, 40) ?? '主仓';
+  await db.prepare(
+    `insert into storage_locations (user_id, name, note)
+     values (?, ?, null)
+     on conflict (user_id, name) do update set archived = 0, updated_at = datetime('now')`,
+  ).bind(userId, name).run();
+  const row = await db.prepare(
+    'select id from storage_locations where user_id = ? and name = ? and archived = 0',
+  ).bind(userId, name).first<{ id: number }>();
+  if (!row) throw new ApiError(500, '保存货品位置失败');
+  return row.id;
+}
+
 /** 列表：支持关键字、分类筛选，以及"只看告警"。告警判断依赖结存，只能在取出后过滤。 */
 items.get('/', async (c) => {
   const q = c.req.query('q')?.trim();
@@ -59,6 +74,13 @@ items.get('/categories', async (c) => {
     .bind(c.var.userId)
     .all<{ category: string }>();
   return c.json(results.map((r) => r.category));
+});
+
+items.get('/locations', async (c) => {
+  const { results } = await c.env.DB.prepare(
+    'select name from storage_locations where user_id = ? and archived = 0 order by name',
+  ).bind(c.var.userId).all<{ name: string }>();
+  return c.json(results.map((row) => row.name));
 });
 
 /** 批量下架：库存流水和图片仍保留，重新添加同名货品时可以恢复。 */
@@ -124,13 +146,15 @@ items.post('/', async (c) => {
     .first<{ id: number; archived: number }>();
   if (existing) {
     if (existing.archived === 0) throw new ApiError(409, `「${name}」已经存在了`);
+    const locationId = await ensureLocation(c.env.DB, c.var.userId, body.locationName);
     // 之前删掉过同名货品：复用这条记录，历史流水也就跟着回来了
     await c.env.DB.batch([
       c.env.DB.prepare(
       `update items set archived = 0, category = ?, unit = ?, pack_size = ?, pack_unit = ?,
-                        min_stock = ?, weekly_target = ?, note = ?, archived_at = null, updated_at = datetime('now')
+                        min_stock = ?, weekly_target = ?, default_location_id = ?, note = ?,
+                        archived_at = null, updated_at = datetime('now')
         where id = ? and user_id = ?`,
-      ).bind(category, unit, pack.size, pack.unit, minStock, weeklyTarget, note, existing.id, c.var.userId),
+      ).bind(category, unit, pack.size, pack.unit, minStock, weeklyTarget, locationId, note, existing.id, c.var.userId),
       c.env.DB.prepare(
         `insert into audit_events (user_id, entity_type, entity_id, action, summary)
          values (?, 'item', ?, 'RESTORE', ?)`,
@@ -139,13 +163,13 @@ items.post('/', async (c) => {
     return c.json({ id: existing.id, restored: true }, 201);
   }
 
+  const locationId = await ensureLocation(c.env.DB, c.var.userId, body.locationName);
   const [res] = await c.env.DB.batch([
     c.env.DB.prepare(
       `insert into items
          (user_id, name, category, unit, pack_size, pack_unit, min_stock, weekly_target, note, default_location_id)
-       values (?, ?, ?, ?, ?, ?, ?, ?, ?,
-               (select id from storage_locations where user_id = ? and name = '主仓'))`,
-    ).bind(c.var.userId, name, category, unit, pack.size, pack.unit, minStock, weeklyTarget, note, c.var.userId),
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(c.var.userId, name, category, unit, pack.size, pack.unit, minStock, weeklyTarget, note, locationId),
     c.env.DB.prepare(
       `insert into audit_events (user_id, entity_type, entity_id, action, summary)
        select ?, 'item', id, 'CREATE', ? from items where user_id = ? and name = ?`,
@@ -169,17 +193,25 @@ items.put('/:id', async (c) => {
   const note = optionalText(body.note, 255);
   const pack = readPack(body);
 
-  const clash = await c.env.DB.prepare('select id from items where user_id = ? and name = ? and id <> ?')
-    .bind(c.var.userId, name, id)
-    .first<{ id: number }>();
+  const [clash, own] = await Promise.all([
+    c.env.DB.prepare('select id from items where user_id = ? and name = ? and id <> ?')
+      .bind(c.var.userId, name, id).first<{ id: number }>(),
+    c.env.DB.prepare('select id from items where id = ? and user_id = ? and archived = 0')
+      .bind(id, c.var.userId).first<{ id: number }>(),
+  ]);
   if (clash) throw new ApiError(409, `「${name}」已经存在了`);
+  if (!own) throw new ApiError(404, '货品不存在');
+  const locationId = body.locationName === undefined
+    ? null
+    : await ensureLocation(c.env.DB, c.var.userId, body.locationName);
 
   const [res] = await c.env.DB.batch([
     c.env.DB.prepare(
       `update items set name = ?, category = ?, unit = ?, pack_size = ?, pack_unit = ?,
-                        min_stock = ?, weekly_target = coalesce(?, weekly_target), note = ?, updated_at = datetime('now')
+                        min_stock = ?, weekly_target = coalesce(?, weekly_target),
+                        default_location_id = coalesce(?, default_location_id), note = ?, updated_at = datetime('now')
        where id = ? and user_id = ? and archived = 0`,
-    ).bind(name, category, unit, pack.size, pack.unit, minStock, weeklyTarget, note, id, c.var.userId),
+    ).bind(name, category, unit, pack.size, pack.unit, minStock, weeklyTarget, locationId, note, id, c.var.userId),
     c.env.DB.prepare(
       `insert into audit_events (user_id, entity_type, entity_id, action, summary)
        select ?, 'item', id, 'UPDATE', ? from items where id = ? and user_id = ? and archived = 0`,
@@ -225,12 +257,13 @@ items.get('/:id/image', async (c) => {
     headers: {
       'content-type': row.mime,
       // 换图后前端请求的 URL 会带上新的 t 参数，所以这里可以放心长缓存
-      'cache-control': 'public, max-age=31536000, immutable',
+      'cache-control': 'private, max-age=31536000, immutable',
     },
   });
 });
 
 const MAX_IMAGE_BYTES = 1_500_000;
+const IMAGE_TYPES = new Set(['image/jpeg', 'image/png', 'image/webp']);
 
 items.post('/:id/image', async (c) => {
   const id = Number(c.req.param('id'));
@@ -241,8 +274,8 @@ items.post('/:id/image', async (c) => {
 
   const form = await c.req.formData();
   const file = form.get('file');
-  if (!(file instanceof File)) throw new ApiError(400, '没有收到图片文件');
-  if (!file.type.startsWith('image/')) throw new ApiError(400, '只能上传图片');
+  if (!(file instanceof File) || file.size === 0) throw new ApiError(400, '没有收到图片文件');
+  if (!IMAGE_TYPES.has(file.type)) throw new ApiError(400, '只支持 JPG、PNG 或 WebP 图片');
   if (file.size > MAX_IMAGE_BYTES) throw new ApiError(413, '图片太大了，请重新拍一张');
 
   const bytes = await file.arrayBuffer();

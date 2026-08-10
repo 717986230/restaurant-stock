@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, ref, watch, nextTick } from 'vue';
-import { api, fmt, packSpec, packText, round3, type Item, type MoveKind } from '@/api';
+import { api, currentUser, fmt, money, packSpec, packText, round3, type Item, type MoveKind } from '@/api';
 import { toast, toastError } from '@/toast';
 
 const props = defineProps<{ item: Item | null; kind: MoveKind }>();
@@ -82,10 +82,10 @@ async function submit() {
   <Teleport to="body">
     <Transition name="sheet">
       <div v-if="item" class="mask" @click.self="emit('close')">
-        <div class="sheet">
+        <div class="sheet" role="dialog" aria-modal="true" aria-labelledby="move-sheet-title">
           <header>
             <div>
-              <strong>{{ title }}</strong>
+              <strong id="move-sheet-title">{{ title }}</strong>
               <div class="muted small">
               {{ item.name }}　当前 {{ fmt(item.stock) }} {{ item.unit }}
               <template v-if="packText(item.stock, item)">（{{ packText(item.stock, item) }}）</template>
@@ -111,6 +111,7 @@ async function submit() {
               step="0.001"
               min="0"
               placeholder="0"
+              :aria-label="`${item.name}${title}数量（${entryUnit}）`"
               @keyup.enter="submit"
             />
             <p v-if="canPack" class="conv">
@@ -122,10 +123,10 @@ async function submit() {
           </div>
 
           <label v-if="kind === 'IN'" class="field">
-            <span>进价（元 / {{ entryUnit }}，可不填）</span>
+            <span>进价（{{ currentUser?.currency ?? 'EUR' }} / {{ entryUnit }}，可不填）</span>
             <input v-model="unitPrice" class="input" type="number" inputmode="decimal" step="0.01" min="0" />
             <p v-if="byPack && Number(unitPrice) > 0" class="conv">
-              折合 ¥{{ fmt(round3(Number(unitPrice) / item.packSize!)) }} / {{ item.unit }}
+              折合 {{ money(round3(Number(unitPrice) / item.packSize!)) }} / {{ item.unit }}
             </p>
           </label>
 

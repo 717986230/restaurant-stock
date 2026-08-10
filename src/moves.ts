@@ -61,7 +61,8 @@ const MOVE_SELECT = `
 moves.get('/', async (c) => {
   const itemId = c.req.query('itemId');
   const day = c.req.query('day');
-  const limit = Math.min(Number(c.req.query('limit') ?? 100) || 100, 500);
+  const requestedLimit = Number(c.req.query('limit') ?? 100);
+  const limit = Number.isFinite(requestedLimit) ? Math.min(Math.max(Math.floor(requestedLimit), 1), 500) : 100;
 
   const where: string[] = ['m.user_id = ?'];
   const binds: unknown[] = [c.var.userId];

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { onMounted, ref } from 'vue';
 import { RouterLink, useRoute, useRouter } from 'vue-router';
-import { api, fmt, packSpec, packText, round3, type Item, type Move, type MoveKind } from '@/api';
+import { api, fmt, money, packSpec, packText, round3, type Item, type Move, type MoveKind } from '@/api';
 import { toast, toastError } from '@/toast';
 import ImagePicker from '@/components/ImagePicker.vue';
 import MoveSheet from '@/components/MoveSheet.vue';
@@ -95,11 +95,12 @@ function timeOf(iso: string): string {
         <span v-else class="tag ok">库存正常</span>
         <span class="muted small">
           {{ item.category }}
+          <template v-if="item.locationName">　位置 {{ item.locationName }}</template>
           <template v-if="item.minStock > 0">　低于 {{ fmt(item.minStock) }} {{ item.unit }} 提醒</template>
           <template v-if="item.weeklyTarget > 0">　每周计划 {{ fmt(item.weeklyTarget) }} {{ item.unit }}</template>
           <template v-if="item.lastPrice != null">
-            　最近进价 ¥{{ item.lastPrice }}/{{ item.unit }}
-            <template v-if="item.packSize">（≈¥{{ fmt(round3(item.lastPrice * item.packSize)) }}/{{ item.packUnit }}）</template>
+            　最近进价 {{ money(item.lastPrice) }}/{{ item.unit }}
+            <template v-if="item.packSize">（≈{{ money(round3(item.lastPrice * item.packSize)) }}/{{ item.packUnit }}）</template>
           </template>
         </span>
       </div>
@@ -125,7 +126,7 @@ function timeOf(iso: string): string {
         <span class="detail muted small">
           {{ timeOf(m.createdAt) }}
           <template v-if="m.kind === 'CHECK' && m.countedQty != null">　盘后 {{ fmt(m.countedQty) }}</template>
-          <template v-if="m.unitPrice != null">　¥{{ m.unitPrice }}</template>
+          <template v-if="m.unitPrice != null">　{{ money(m.unitPrice) }}</template>
           <template v-if="m.note">　{{ m.note }}</template>
         </span>
         <button class="undo" @click="undo(m)" aria-label="撤销">撤销</button>
