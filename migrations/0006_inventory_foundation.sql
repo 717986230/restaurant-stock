@@ -89,46 +89,9 @@ create index idx_items_default_supplier on items (user_id, default_supplier_id);
 create index idx_items_default_location on items (user_id, default_location_id);
 create unique index idx_items_id_user on items (id, user_id);
 
--- ALTER TABLE 无法给新增列补复合外键，用触发器保证默认供应商和仓位属于同一账号。
-create trigger trg_items_supplier_tenant_insert
-before insert on items
-when new.default_supplier_id is not null
- and not exists (
-   select 1 from suppliers s where s.id = new.default_supplier_id and s.user_id = new.user_id
- )
-begin
-  select raise(abort, 'default supplier must belong to the same user');
-end;
-
-create trigger trg_items_supplier_tenant_update
-before update of default_supplier_id, user_id on items
-when new.default_supplier_id is not null
- and not exists (
-   select 1 from suppliers s where s.id = new.default_supplier_id and s.user_id = new.user_id
- )
-begin
-  select raise(abort, 'default supplier must belong to the same user');
-end;
-
-create trigger trg_items_location_tenant_insert
-before insert on items
-when new.default_location_id is not null
- and not exists (
-   select 1 from storage_locations l where l.id = new.default_location_id and l.user_id = new.user_id
- )
-begin
-  select raise(abort, 'default location must belong to the same user');
-end;
-
-create trigger trg_items_location_tenant_update
-before update of default_location_id, user_id on items
-when new.default_location_id is not null
- and not exists (
-   select 1 from storage_locations l where l.id = new.default_location_id and l.user_id = new.user_id
- )
-begin
-  select raise(abort, 'default location must belong to the same user');
-end;
+-- 默认供应商和仓位只通过按 user_id 过滤的应用接口写入。
+-- D1 远程 migration 的语句分割器不可靠地处理 CREATE TRIGGER BEGIN/END，
+-- 因此这里不重复添加触发器；后续新表继续使用下面的复合外键强制租户一致性。
 
 -- 同一货品可以有多个供应商，并保留各自货号、包装和最近采购价。
 create table item_suppliers (
@@ -211,46 +174,6 @@ where request_id is not null and request_id <> '';
 create index idx_moves_user_item on stock_moves (user_id, item_id, id desc);
 create index idx_moves_location_day on stock_moves (user_id, location_id, day desc, id desc);
 create index idx_moves_supplier on stock_moves (user_id, supplier_id, id desc);
-
-create trigger trg_moves_location_tenant_insert
-before insert on stock_moves
-when new.location_id is not null
- and not exists (
-   select 1 from storage_locations l where l.id = new.location_id and l.user_id = new.user_id
- )
-begin
-  select raise(abort, 'stock move location must belong to the same user');
-end;
-
-create trigger trg_moves_location_tenant_update
-before update of location_id, user_id on stock_moves
-when new.location_id is not null
- and not exists (
-   select 1 from storage_locations l where l.id = new.location_id and l.user_id = new.user_id
- )
-begin
-  select raise(abort, 'stock move location must belong to the same user');
-end;
-
-create trigger trg_moves_supplier_tenant_insert
-before insert on stock_moves
-when new.supplier_id is not null
- and not exists (
-   select 1 from suppliers s where s.id = new.supplier_id and s.user_id = new.user_id
- )
-begin
-  select raise(abort, 'stock move supplier must belong to the same user');
-end;
-
-create trigger trg_moves_supplier_tenant_update
-before update of supplier_id, user_id on stock_moves
-when new.supplier_id is not null
- and not exists (
-   select 1 from suppliers s where s.id = new.supplier_id and s.user_id = new.user_id
- )
-begin
-  select raise(abort, 'stock move supplier must belong to the same user');
-end;
 
 -- 业务审计与库存流水分开：流水负责算库存，审计负责回答“谁在什么时候改了什么”。
 create table audit_events (
