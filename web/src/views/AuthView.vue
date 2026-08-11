@@ -9,6 +9,7 @@ const mode = ref<'login' | 'register'>('login');
 const username = ref('');
 const password = ref('');
 const password2 = ref('');
+const invite = ref('');
 const showPassword = ref(false);
 const busy = ref(false);
 const error = ref('');
@@ -19,7 +20,9 @@ function validate(): string | null {
   const name = username.value.trim();
   if (!/^[a-zA-Z0-9_一-龥]{2,20}$/.test(name)) return '用户名 2-20 位，只能用中文、字母、数字和下划线';
   if (password.value.length < 6) return '密码至少 6 位';
-  if (isRegister.value && password.value !== password2.value) return '两次输入的密码不一样';
+  if (!isRegister.value) return null;
+  if (!invite.value.trim()) return '请填邀请码';
+  if (password.value !== password2.value) return '两次输入的密码不一样';
   return null;
 }
 
@@ -37,7 +40,9 @@ async function submit() {
     const name = username.value.trim();
     // 这一步在手机上跑 60 万次迭代，约 0.2~0.5 秒，明文密码不出这台设备
     const key = await deriveKey(name, password.value);
-    const res = isRegister.value ? await api.register(name, key) : await api.login(name, key);
+    const res = isRegister.value
+      ? await api.register(name, key, invite.value.trim())
+      : await api.login(name, key);
     currentUser.value = res.user;
     emit('done');
   } catch (e) {
@@ -51,6 +56,7 @@ function switchMode() {
   mode.value = isRegister.value ? 'login' : 'register';
   error.value = '';
   password2.value = '';
+  invite.value = '';
 }
 </script>
 
@@ -105,6 +111,11 @@ function switchMode() {
           />
         </label>
 
+        <label v-if="isRegister" class="field">
+          <span>邀请码</span>
+          <input v-model="invite" class="input" autocapitalize="none" autocorrect="off" placeholder="向管理员索取" />
+        </label>
+
         <p v-if="error" class="err">{{ error }}</p>
 
         <button class="btn btn-primary btn-block" type="submit" :disabled="busy">
@@ -114,7 +125,7 @@ function switchMode() {
 
       <p class="muted small foot">
         <template v-if="isRegister">
-          注册后会自动给你铺好 48 项常备物料，改改数字就能用。<br />
+          注册需要邀请码，注册后会自动铺好 48 项常备物料。<br />
           已经有账号了？
           <button class="link" @click="switchMode">去登录</button>
         </template>

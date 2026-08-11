@@ -88,11 +88,11 @@ export const api = {
   me() {
     return request<{ ok: boolean; user?: User }>('/me');
   },
-  register(username: string, key: string) {
+  register(username: string, key: string, invite: string) {
     return request<{ ok: true; user: User; seeded: number }>('/register', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ username, key }),
+      body: JSON.stringify({ username, key, invite }),
     });
   },
   login(username: string, key: string) {

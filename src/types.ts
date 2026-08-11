@@ -1,5 +1,7 @@
 export interface Env {
   DB: D1Database;
+  /** 注册邀请码，用 `wrangler secret put INVITE_CODE` 设置，不进代码库。没配置则注册关闭。 */
+  INVITE_CODE?: string;
 }
 
 /** 鉴权中间件把当前登录用户放进 c.var.userId，业务查询一律按它过滤 */

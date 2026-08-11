@@ -175,6 +175,19 @@ export function registerAuthRoutes(app: Hono<AppEnv>) {
   app.post('/api/register', async (c) => {
     const { ip, fails } = await throttle(c);
     const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+
+    // 邀请码没配置就一律不放行。宁可自己也注册不了（去补一条 secret 命令即可），
+    // 也好过忘了配就悄悄变成谁都能注册。
+    const invite = c.env.INVITE_CODE;
+    if (!invite) {
+      throw new ApiError(503, '注册暂未开放：服务端还没有配置邀请码');
+    }
+    // 邀请码放在最前面校验：没有邀请码的人连"这个用户名存不存在"都问不出来
+    if (!timingSafeEqual(typeof body.invite === 'string' ? body.invite.trim() : '', invite)) {
+      const left = await recordFail(c.env, ip, fails);
+      throw new ApiError(403, left > 0 ? `邀请码不对，还可以试 ${left} 次` : '尝试太多次了，请稍后再试');
+    }
+
     const displayName = requireUsername(body.username);
     const username = displayName.toLowerCase();
     const clientKey = requireClientKey(body.key);
