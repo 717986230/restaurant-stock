@@ -7,3 +7,6 @@ dist/
 .dev.vars
 .env
 .env.*
+
+# 数据库备份含真实经营数据和货品照片，不进版本库
+backups/
