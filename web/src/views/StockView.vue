@@ -175,6 +175,15 @@ function openSheet(item: Item, kind: MoveKind) {
   </header>
 
   <main :class="['page', 'with-floating-action', { selecting }]">
+    <RouterLink v-if="summary?.needCheck" to="/stocktake" class="check-banner">
+      <span class="ic" aria-hidden="true">🧮</span>
+      <span class="txt">
+        <strong>{{ summary.lastCheckDay ? `已经 ${summary.daysSinceCheck} 天没盘点了` : '还没盘过库存' }}</strong>
+        <span class="muted small">数一遍实际数量就行，不用逐笔记出库。盘完系统才知道你每天用多少。</span>
+      </span>
+      <span class="go" aria-hidden="true">›</span>
+    </RouterLink>
+
     <div v-if="loading" class="spinner">加载中…</div>
     <div v-else-if="!list.length" class="empty">
       <p>没有符合条件的货品</p>
@@ -208,7 +217,10 @@ function openSheet(item: Item, kind: MoveKind) {
               <div class="qty">
                 <strong>{{ fmt(it.stock) }}</strong> {{ it.unit }}
                 <span v-if="packText(it.stock, it)" class="pack">＝ {{ packText(it.stock, it) }}</span>
-                <span v-if="it.minStock > 0" class="muted small">／低于 {{ fmt(it.minStock) }} 提醒</span>
+                <span v-if="it.daysLeft !== null" class="days" :class="{ urgent: it.status !== 'OK' }">
+                  约够 {{ it.daysLeft }} 天
+                </span>
+                <span v-if="it.reorderBasis === 'MIN_STOCK' && it.minStock > 0" class="muted small">／低于 {{ fmt(it.minStock) }} 提醒</span>
               </div>
               <div v-if="it.lastPrice != null || it.locationName" class="details">
                 <span v-if="it.lastPrice != null">最近进价 {{ money(it.lastPrice) }} / {{ it.unit }}</span>
@@ -467,6 +479,51 @@ function openSheet(item: Item, kind: MoveKind) {
   color: var(--muted);
   font-size: 12px;
   line-height: 1.35;
+}
+
+.check-banner {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 14px;
+  margin-bottom: 14px;
+  border-radius: 14px;
+  border: 1px solid var(--warn);
+  background: var(--warn-soft);
+}
+
+.check-banner .ic {
+  font-size: 22px;
+  flex: none;
+}
+
+.check-banner .txt {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.check-banner strong {
+  font-size: 15px;
+  color: var(--warn);
+}
+
+.check-banner .go {
+  flex: none;
+  font-size: 22px;
+  color: var(--warn);
+}
+
+.days {
+  margin-left: 6px;
+  color: var(--muted);
+}
+
+.days.urgent {
+  color: var(--danger);
+  font-weight: 600;
 }
 
 .pack {

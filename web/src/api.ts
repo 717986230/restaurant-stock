@@ -13,9 +13,19 @@ export interface Item {
   packSize: number | null;
   /** 大单位名，如「箱」 */
   packUnit: string | null;
+  /** 兜底阈值：只在还算不出消耗速度时用来判断告警 */
   minStock: number;
   /** 每周补货后希望达到的基本单位库存；0 表示不加入补货计划 */
   weeklyTarget: number;
+  /** 从下单到送到要几天 */
+  leadTimeDays: number;
+  /** 实测日均消耗；null 表示盘点次数还不够，算不出来 */
+  dailyUse: number | null;
+  /** 按现在的速度还能撑几天 */
+  daysLeft: number | null;
+  /** 低于这个数就该下单了 */
+  reorderPoint: number;
+  reorderBasis: 'USAGE' | 'MIN_STOCK';
   /** 默认存放仓位名称 */
   locationName: string | null;
   lastPrice: number | null;
@@ -49,6 +59,12 @@ export interface Summary {
   todayIn: number;
   todayOut: number;
   todayCheck: number;
+  /** 最近一次盘点的日期；null 表示从没盘过 */
+  lastCheckDay: string | null;
+  daysSinceCheck: number | null;
+  needCheck: boolean;
+  /** 已攒够数据、能算出消耗速度的货品数 */
+  trackedItems: number;
 }
 
 export interface User {

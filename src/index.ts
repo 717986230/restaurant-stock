@@ -3,6 +3,10 @@ import { registerAuthRoutes, requireAuth } from './auth';
 import { items } from './items';
 import { moves } from './moves';
 import { ApiError, normalizeDay, round3, statusOf, toItemDto, type AppEnv, type ItemRow } from './types';
+import { loadUsage, reorderPointOf } from './usage';
+
+/** 超过这么多天没盘点就在首页提醒 */
+const CHECK_INTERVAL_DAYS = 7;
 
 const app = new Hono<AppEnv>();
 
@@ -17,25 +21,36 @@ app.route('/api/moves', moves);
 app.get('/api/summary', async (c) => {
   const day = normalizeDay(c.req.query('day'));
 
-  const [itemRows, dayRows] = await Promise.all([
+  const [itemRows, dayRows, lastCheck, usage] = await Promise.all([
     c.env.DB.prepare(
-      `select i.min_stock,
+      `select i.id, i.min_stock, i.lead_time_days,
               coalesce((select sum(m.qty) from stock_moves m where m.item_id = i.id), 0) as stock
        from items i where i.user_id = ? and i.archived = 0`,
-    ).bind(c.var.userId).all<{ min_stock: number; stock: number }>(),
+    ).bind(c.var.userId).all<{ id: number; min_stock: number; lead_time_days: number; stock: number }>(),
     c.env.DB.prepare(
       `select kind, count(*) as n from stock_moves where user_id = ? and day = ? group by kind`,
     ).bind(c.var.userId, day).all<{ kind: string; n: number }>(),
+    c.env.DB.prepare(
+      `select max(day) as day from stock_moves where user_id = ? and kind = 'CHECK'`,
+    ).bind(c.var.userId).first<{ day: string | null }>(),
+    loadUsage(c.env.DB, c.var.userId),
   ]);
 
   let low = 0;
   let out = 0;
   for (const r of itemRows.results) {
-    const s = statusOf(r.stock ?? 0, r.min_stock);
+    const { point } = reorderPointOf(usage.get(r.id), r.lead_time_days, r.min_stock);
+    const s = statusOf(r.stock ?? 0, point);
     if (s === 'OUT') out++;
     else if (s === 'LOW') low++;
   }
   const byKind = Object.fromEntries(dayRows.results.map((r) => [r.kind, r.n]));
+
+  // 盘点是这套模式的命根子：不盘就没有消耗速度，预警和补货清单都会退化成瞎猜。
+  const lastCheckDay = lastCheck?.day ?? null;
+  const daysSinceCheck = lastCheckDay
+    ? Math.max(0, Math.round((Date.parse(`${day}T00:00:00Z`) - Date.parse(`${lastCheckDay}T00:00:00Z`)) / 86400_000))
+    : null;
 
   return c.json({
     day,
@@ -46,6 +61,11 @@ app.get('/api/summary', async (c) => {
     todayIn: byKind.IN ?? 0,
     todayOut: byKind.OUT ?? 0,
     todayCheck: byKind.CHECK ?? 0,
+    lastCheckDay,
+    daysSinceCheck,
+    needCheck: daysSinceCheck === null || daysSinceCheck >= CHECK_INTERVAL_DAYS,
+    /** 已经攒够数据、能算出消耗速度的货品数，用来告诉老板这套预警现在有多准 */
+    trackedItems: usage.size,
   });
 });
 
@@ -53,15 +73,20 @@ app.get('/api/summary', async (c) => {
 app.get('/api/export.csv', async (c) => {
   const { results } = await c.env.DB.prepare(
     `select i.id, i.name, i.category, i.unit, i.pack_size, i.pack_unit,
-            i.min_stock, i.weekly_target, i.last_price, i.has_image, i.note,
+            i.min_stock, i.weekly_target, i.lead_time_days, i.last_price, i.has_image, i.note,
             (select l.name from storage_locations l where l.id = i.default_location_id and l.user_id = i.user_id) as location_name,
             coalesce((select sum(m.qty) from stock_moves m where m.item_id = i.id), 0) as stock
      from items i where i.user_id = ? and i.archived = 0 order by i.category, i.name`,
   ).bind(c.var.userId).all<ItemRow>();
+  const usage = await loadUsage(c.env.DB, c.var.userId);
 
   const label = { OUT: '已用光', LOW: '偏低', OK: '正常' } as const;
-  const header = ['分类', '货品', '存放位置', '单位', '当前结存', '折合整箱', '整箱规格', '低库存阈值', '每周计划库存', '状态', '最近进价', '备注'];
-  const lines = results.map(toItemDto).map((it) =>
+  const header = [
+    '分类', '货品', '存放位置', '单位', '当前结存', '折合整箱', '整箱规格',
+    '日均消耗', '还能撑几天', '送货天数', '再订货点', '预警依据', '每周计划库存', '状态', '最近进价', '备注',
+  ];
+  const basisLabel = { USAGE: '按实测消耗', MIN_STOCK: '兜底阈值（盘点不足）' } as const;
+  const lines = results.map((row) => toItemDto(row, usage.get(row.id))).map((it) =>
     [
       it.category,
       it.name,
@@ -70,7 +95,11 @@ app.get('/api/export.csv', async (c) => {
       it.stock,
       it.packSize ? packText(it.stock, it.packSize, it.packUnit!, it.unit) : '',
       it.packSize ? `1${it.packUnit} = ${it.packSize}${it.unit}` : '',
-      it.minStock,
+      it.dailyUse ?? '',
+      it.daysLeft ?? '',
+      it.leadTimeDays,
+      it.reorderPoint,
+      basisLabel[it.reorderBasis],
       it.weeklyTarget,
       label[it.status],
       it.lastPrice ?? '',

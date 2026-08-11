@@ -8,12 +8,13 @@ import {
   type AppEnv,
   type ItemRow,
 } from './types';
+import { DEFAULT_LEAD_TIME_DAYS, loadUsage } from './usage';
 
 export const items = new Hono<AppEnv>();
 
 const ITEM_SELECT = `
   select i.id, i.name, i.category, i.unit, i.pack_size, i.pack_unit,
-         i.min_stock, i.weekly_target, i.last_price, i.has_image, i.note,
+         i.min_stock, i.weekly_target, i.lead_time_days, i.last_price, i.has_image, i.note,
          (select l.name from storage_locations l where l.id = i.default_location_id and l.user_id = i.user_id) as location_name,
          coalesce((select sum(m.qty) from stock_moves m where m.item_id = i.id), 0) as stock
   from items i
@@ -60,9 +61,12 @@ items.get('/', async (c) => {
   }
 
   const sql = `${ITEM_SELECT} where ${where.join(' and ')} order by i.category, i.name`;
-  const { results } = await c.env.DB.prepare(sql).bind(...binds).all<ItemRow>();
+  const [{ results }, usage] = await Promise.all([
+    c.env.DB.prepare(sql).bind(...binds).all<ItemRow>(),
+    loadUsage(c.env.DB, c.var.userId),
+  ]);
 
-  let list = results.map(toItemDto);
+  let list = results.map((row) => toItemDto(row, usage.get(row.id)));
   if (onlyLow) list = list.filter((it) => it.status !== 'OK');
   return c.json(list);
 });
@@ -123,9 +127,12 @@ items.post('/bulk-archive', async (c) => {
 
 items.get('/:id', async (c) => {
   const id = Number(c.req.param('id'));
-  const row = await c.env.DB.prepare(`${ITEM_SELECT} where i.id = ? and i.user_id = ?`).bind(id, c.var.userId).first<ItemRow>();
+  const [row, usage] = await Promise.all([
+    c.env.DB.prepare(`${ITEM_SELECT} where i.id = ? and i.user_id = ?`).bind(id, c.var.userId).first<ItemRow>(),
+    loadUsage(c.env.DB, c.var.userId),
+  ]);
   if (!row) throw new ApiError(404, '货品不存在');
-  return c.json(toItemDto(row));
+  return c.json(toItemDto(row, usage.get(row.id)));
 });
 
 items.post('/', async (c) => {
@@ -138,6 +145,9 @@ items.post('/', async (c) => {
   const weeklyTarget = body.weeklyTarget === undefined
     ? minStock * 2
     : requireNumber(body.weeklyTarget, '每周计划库存', { min: 0 });
+  const leadTimeDays = body.leadTimeDays === undefined
+    ? DEFAULT_LEAD_TIME_DAYS
+    : requireNumber(body.leadTimeDays, '送货天数', { min: 0, max: 60 });
   const note = optionalText(body.note, 255);
   const pack = readPack(body);
 
@@ -151,10 +161,10 @@ items.post('/', async (c) => {
     await c.env.DB.batch([
       c.env.DB.prepare(
       `update items set archived = 0, category = ?, unit = ?, pack_size = ?, pack_unit = ?,
-                        min_stock = ?, weekly_target = ?, default_location_id = ?, note = ?,
+                        min_stock = ?, weekly_target = ?, lead_time_days = ?, default_location_id = ?, note = ?,
                         archived_at = null, updated_at = datetime('now')
         where id = ? and user_id = ?`,
-      ).bind(category, unit, pack.size, pack.unit, minStock, weeklyTarget, locationId, note, existing.id, c.var.userId),
+      ).bind(category, unit, pack.size, pack.unit, minStock, weeklyTarget, leadTimeDays, locationId, note, existing.id, c.var.userId),
       c.env.DB.prepare(
         `insert into audit_events (user_id, entity_type, entity_id, action, summary)
          values (?, 'item', ?, 'RESTORE', ?)`,
@@ -167,9 +177,9 @@ items.post('/', async (c) => {
   const [res] = await c.env.DB.batch([
     c.env.DB.prepare(
       `insert into items
-         (user_id, name, category, unit, pack_size, pack_unit, min_stock, weekly_target, note, default_location_id)
-       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-    ).bind(c.var.userId, name, category, unit, pack.size, pack.unit, minStock, weeklyTarget, note, locationId),
+         (user_id, name, category, unit, pack_size, pack_unit, min_stock, weekly_target, lead_time_days, note, default_location_id)
+       values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    ).bind(c.var.userId, name, category, unit, pack.size, pack.unit, minStock, weeklyTarget, leadTimeDays, note, locationId),
     c.env.DB.prepare(
       `insert into audit_events (user_id, entity_type, entity_id, action, summary)
        select ?, 'item', id, 'CREATE', ? from items where user_id = ? and name = ?`,
@@ -190,6 +200,9 @@ items.put('/:id', async (c) => {
   const weeklyTarget = body.weeklyTarget === undefined
     ? null
     : requireNumber(body.weeklyTarget, '每周计划库存', { min: 0 });
+  const leadTimeDays = body.leadTimeDays === undefined
+    ? null
+    : requireNumber(body.leadTimeDays, '送货天数', { min: 0, max: 60 });
   const note = optionalText(body.note, 255);
   const pack = readPack(body);
 
@@ -209,9 +222,10 @@ items.put('/:id', async (c) => {
     c.env.DB.prepare(
       `update items set name = ?, category = ?, unit = ?, pack_size = ?, pack_unit = ?,
                         min_stock = ?, weekly_target = coalesce(?, weekly_target),
+                        lead_time_days = coalesce(?, lead_time_days),
                         default_location_id = coalesce(?, default_location_id), note = ?, updated_at = datetime('now')
        where id = ? and user_id = ? and archived = 0`,
-    ).bind(name, category, unit, pack.size, pack.unit, minStock, weeklyTarget, locationId, note, id, c.var.userId),
+    ).bind(name, category, unit, pack.size, pack.unit, minStock, weeklyTarget, leadTimeDays, locationId, note, id, c.var.userId),
     c.env.DB.prepare(
       `insert into audit_events (user_id, entity_type, entity_id, action, summary)
        select ?, 'item', id, 'UPDATE', ? from items where id = ? and user_id = ? and archived = 0`,

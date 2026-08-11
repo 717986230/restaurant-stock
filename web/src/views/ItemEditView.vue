@@ -16,6 +16,7 @@ const packSize = ref('');
 const packUnit = ref('箱');
 const minStock = ref('0');
 const weeklyTarget = ref('0');
+const leadTimeDays = ref('2');
 const locationName = ref('主仓');
 const note = ref('');
 const categories = ref<string[]>([]);
@@ -46,6 +47,7 @@ onMounted(async () => {
       packUnit.value = it.packUnit ?? '箱';
       minStock.value = String(it.minStock);
       weeklyTarget.value = String(it.weeklyTarget);
+      leadTimeDays.value = String(it.leadTimeDays);
       locationName.value = it.locationName ?? '主仓';
       note.value = it.note ?? '';
     } catch (e) {
@@ -71,6 +73,7 @@ async function save() {
     packUnit: packUnit.value,
     minStock: Number(minStock.value) || 0,
     weeklyTarget: Number(weeklyTarget.value) || 0,
+    leadTimeDays: Math.max(0, Math.min(60, Math.round(Number(leadTimeDays.value) || 0))),
     locationName: locationName.value.trim() || '主仓',
     note: note.value.trim() || null,
   };
@@ -150,15 +153,27 @@ async function save() {
     </div>
 
     <label class="field">
-      <span>低库存阈值（{{ unit }}）</span>
-      <input v-model="minStock" class="input" type="number" inputmode="decimal" step="0.001" min="0" />
-      <small class="muted">结存降到这个数以下，列表里会标红提醒。填 0 表示只在用光时提醒。</small>
+      <span>送货要几天</span>
+      <input v-model="leadTimeDays" class="input" type="number" inputmode="numeric" step="1" min="0" max="60" />
+      <small class="muted">
+        从你下单到货送到，一般要几天。系统按「日均消耗 ×（送货天数 + 2 天余量）」算出什么时候该下单，
+        跌破就标红——不用你自己拍一个阈值。日均消耗从两次盘点之间自动推算。
+      </small>
     </label>
 
     <label class="field">
-      <span>每周计划库存（{{ unit }}）</span>
+      <span>常备量 / 每周补到多少（{{ unit }}）</span>
       <input v-model="weeklyTarget" class="input" type="number" inputmode="decimal" step="0.001" min="0" />
-      <small class="muted">补货量按“每周计划库存 − 当前库存”计算；有整箱规格时会向上取整到整箱。填 0 表示不加入补货清单。</small>
+      <small class="muted">补货量按“常备量 − 当前库存”计算；有整箱规格时会向上取整到整箱。填 0 表示不加入补货清单。</small>
+    </label>
+
+    <label class="field">
+      <span>兜底阈值（{{ unit }}）</span>
+      <input v-model="minStock" class="input" type="number" inputmode="decimal" step="0.001" min="0" />
+      <small class="muted">
+        只在这件货品还没盘过两次、算不出消耗速度时才用它判断标红。攒够盘点数据后就自动改用上面的算法，
+        这个数可以不管。
+      </small>
     </label>
 
     <label class="field">

@@ -10,6 +10,8 @@ interface ReplenishmentPlan {
   needed: number;
   orderQty: number;
   packs: number | null;
+  /** 已经跌到再订货点：再不下单，货没到就断了 */
+  urgent: boolean;
 }
 
 const items = ref<Item[]>([]);
@@ -26,10 +28,22 @@ const plans = computed<ReplenishmentPlan[]>(() =>
         needed,
         orderQty: packs === null ? needed : round3(packs * item.packSize!),
         packs,
+        urgent: item.status !== 'OK',
       };
     })
-    .sort((a, b) => a.item.category.localeCompare(b.item.category, 'zh-CN') || a.item.name.localeCompare(b.item.name, 'zh-CN')),
+    // 必须下单的排最前面：这张清单是拿着照着订货的，紧急的不能埋在中间
+    .sort(
+      (a, b) =>
+        Number(b.urgent) - Number(a.urgent) ||
+        a.item.category.localeCompare(b.item.category, 'zh-CN') ||
+        a.item.name.localeCompare(b.item.name, 'zh-CN'),
+    ),
 );
+
+// 已用光和"跌到再订货点"要分开讲：新账号所有东西都是 0，
+// 全部打同一个标签等于没标。
+const outCount = computed(() => plans.value.filter((p) => p.item.status === 'OUT').length);
+const lowCount = computed(() => plans.value.filter((p) => p.item.status === 'LOW').length);
 
 onMounted(async () => {
   try {
@@ -91,22 +105,37 @@ async function copyShoppingList() {
   </header>
 
   <main class="page with-floating-actions">
-    <h2 class="sec">本周补货计划（{{ plans.length }}）</h2>
-    <p class="formula">计划库存 − 现有库存；按箱采购的货品会向上取整到整箱。</p>
+    <h2 class="sec">补货计划（{{ plans.length }}）</h2>
+    <p class="formula">
+      补货量 = 常备量 − 现有库存，按箱采购的向上取整到整箱。<br />
+      标「现在下单」的是已经跌到再订货点的——按目前消耗速度，等到货那天正好用完或已经断货。
+    </p>
+    <p v-if="outCount || lowCount" class="urgent-line">
+      <template v-if="outCount">⚠️ {{ outCount }} 项已经用光</template>
+      <template v-if="outCount && lowCount">，</template>
+      <template v-if="lowCount">{{ lowCount }} 项跌到再订货点</template>
+    </p>
     <div v-if="loading" class="spinner">加载中…</div>
     <p v-else-if="!plans.length" class="ok-box">当前库存已经达到本周计划。</p>
     <ul v-else class="alerts">
       <li v-for="plan in plans" :key="plan.item.id" :class="plan.item.status.toLowerCase()">
         <RouterLink :to="`/items/${plan.item.id}`">
           <span class="plan-head">
-            <span class="name">{{ plan.item.name }}</span>
+            <span class="name">
+              {{ plan.item.name }}
+              <span v-if="plan.item.status === 'OUT'" class="now out">已用光</span>
+              <span v-else-if="plan.item.status === 'LOW'" class="now">现在下单</span>
+            </span>
             <strong class="order">
               补 {{ plan.packs === null ? `${fmt(plan.orderQty)} ${plan.item.unit}` : `${plan.packs} ${plan.item.packUnit}` }}
             </strong>
           </span>
           <span class="small">
-            现有 {{ fmt(plan.item.stock) }} {{ plan.item.unit }}／周计划 {{ fmt(plan.item.weeklyTarget) }} {{ plan.item.unit }}
+            现有 {{ fmt(plan.item.stock) }} {{ plan.item.unit }}／常备 {{ fmt(plan.item.weeklyTarget) }} {{ plan.item.unit }}
             <template v-if="plan.packs !== null">／实际到货 {{ fmt(plan.orderQty) }} {{ plan.item.unit }}</template>
+            <template v-if="plan.item.daysLeft !== null">
+              <br />约够 {{ plan.item.daysLeft }} 天，送到要 {{ plan.item.leadTimeDays }} 天
+            </template>
           </span>
         </RouterLink>
       </li>
@@ -152,6 +181,28 @@ async function copyShoppingList() {
 
 .sec:first-child {
   margin-top: 0;
+}
+
+.urgent-line {
+  margin: -4px 0 10px;
+  color: var(--danger);
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.now {
+  margin-left: 6px;
+  padding: 2px 7px;
+  border-radius: 999px;
+  background: var(--warn);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
+.now.out {
+  background: var(--danger);
 }
 
 .formula {

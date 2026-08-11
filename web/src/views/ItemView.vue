@@ -100,6 +100,16 @@ function timeOf(iso: string): string {
         <template v-if="packText(item.stock, item)">＝ {{ packText(item.stock, item) }}　</template>
         <span class="muted small">{{ packSpec(item) }}</span>
       </div>
+      <div v-if="item.dailyUse !== null" class="usage">
+        每天约用 <strong>{{ fmt(item.dailyUse) }}</strong> {{ item.unit }}，
+        还能撑 <strong>{{ item.daysLeft }}</strong> 天；送到要 {{ item.leadTimeDays }} 天，
+        低于 <strong>{{ fmt(item.reorderPoint) }}</strong> {{ item.unit }} 就该下单
+      </div>
+      <div v-else class="usage pending">
+        还算不出每天用多少——盘点满两次（间隔 3 天以上）之后，这里会告诉你还能撑几天、什么时候该下单。
+        目前暂时按兜底阈值 {{ fmt(item.minStock) }} {{ item.unit }} 提醒。
+      </div>
+
       <div class="meta">
         <span v-if="item.status === 'OUT'" class="tag bad">库存已用光</span>
         <span v-else-if="item.status === 'LOW'" class="tag warn">库存不足，该补货了</span>
@@ -107,8 +117,11 @@ function timeOf(iso: string): string {
         <span class="muted small">
           {{ item.category }}
           <template v-if="item.locationName">　位置 {{ item.locationName }}</template>
-          <template v-if="item.minStock > 0">　低于 {{ fmt(item.minStock) }} {{ item.unit }} 提醒</template>
-          <template v-if="item.weeklyTarget > 0">　每周计划 {{ fmt(item.weeklyTarget) }} {{ item.unit }}</template>
+          <!-- 兜底阈值只在真的被用来判断告警时才显示，否则会和上面算出来的再订货点对不上 -->
+          <template v-if="item.reorderBasis === 'MIN_STOCK' && item.minStock > 0">
+            　低于 {{ fmt(item.minStock) }} {{ item.unit }} 提醒
+          </template>
+          <template v-if="item.weeklyTarget > 0">　常备 {{ fmt(item.weeklyTarget) }} {{ item.unit }}</template>
           <template v-if="item.lastPrice != null">
             　最近进价 {{ money(item.lastPrice) }}/{{ item.unit }}
             <template v-if="item.packSize">（≈{{ money(round3(item.lastPrice * item.packSize)) }}/{{ item.packUnit }}）</template>
@@ -199,6 +212,21 @@ function timeOf(iso: string): string {
   font-size: 14px;
   color: var(--brand);
   font-weight: 600;
+}
+
+.usage {
+  margin-top: 10px;
+  font-size: 13px;
+  line-height: 1.7;
+  color: var(--muted);
+}
+
+.usage strong {
+  color: var(--text);
+}
+
+.usage.pending {
+  font-size: 12.5px;
 }
 
 .meta {

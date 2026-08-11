@@ -1,3 +1,5 @@
+import { reorderPointOf, type ItemUsage } from './usage';
+
 export interface Env {
   DB: D1Database;
   /** 注册邀请码，用 `wrangler secret put INVITE_CODE` 设置，不进代码库。没配置则注册关闭。 */
@@ -24,12 +26,16 @@ export interface ItemRow {
   pack_unit: string | null;
   min_stock: number;
   weekly_target: number;
+  lead_time_days: number;
   location_name: string | null;
   last_price: number | null;
   has_image: number;
   note: string | null;
   stock: number;
 }
+
+/** 再订货点的依据：按实测消耗算出来的，还是退回到人工填的兜底阈值 */
+export type ReorderBasis = 'USAGE' | 'MIN_STOCK';
 
 export interface ItemDto {
   id: number;
@@ -41,9 +47,19 @@ export interface ItemDto {
   packSize: number | null;
   /** 大单位名，如「箱」 */
   packUnit: string | null;
+  /** 兜底阈值：只在还算不出消耗速度时用来判断告警 */
   minStock: number;
   /** 每周补货后希望达到的基本单位库存；0 表示不加入补货计划 */
   weeklyTarget: number;
+  /** 从下单到送到要几天 */
+  leadTimeDays: number;
+  /** 实测日均消耗；null 表示盘点次数还不够，算不出来 */
+  dailyUse: number | null;
+  /** 按现在的速度还能撑几天；dailyUse 为空时也为空 */
+  daysLeft: number | null;
+  /** 低于这个数就该下单了 */
+  reorderPoint: number;
+  reorderBasis: ReorderBasis;
   /** 默认存放仓位名称 */
   locationName: string | null;
   lastPrice: number | null;
@@ -54,17 +70,18 @@ export interface ItemDto {
 }
 
 /**
- * 库存告警只有两个来源：已经用光（<=0），或者已经跌到自己设的阈值。
- * 阈值为 0 表示这件东西不需要盯着，就只在真用光时报警。
+ * 库存告警两个来源：已经用光（<=0），或者已经跌到再订货点——
+ * 即"现在不下单，货还没到就会断"。再订货点为 0 表示这件东西不用盯着。
  */
-export function statusOf(stock: number, minStock: number): StockStatus {
+export function statusOf(stock: number, reorderPoint: number): StockStatus {
   if (stock <= 0) return 'OUT';
-  if (minStock > 0 && stock <= minStock) return 'LOW';
+  if (reorderPoint > 0 && stock <= reorderPoint) return 'LOW';
   return 'OK';
 }
 
-export function toItemDto(row: ItemRow): ItemDto {
+export function toItemDto(row: ItemRow, usage?: ItemUsage): ItemDto {
   const stock = round3(row.stock ?? 0);
+  const { point, basis } = reorderPointOf(usage, row.lead_time_days, row.min_stock);
   return {
     id: row.id,
     name: row.name,
@@ -74,12 +91,17 @@ export function toItemDto(row: ItemRow): ItemDto {
     packUnit: row.pack_unit,
     minStock: row.min_stock,
     weeklyTarget: row.weekly_target,
+    leadTimeDays: row.lead_time_days,
+    dailyUse: usage ? usage.dailyUse : null,
+    daysLeft: usage && usage.dailyUse > 0 ? Math.floor(stock / usage.dailyUse) : null,
+    reorderPoint: point,
+    reorderBasis: basis,
     locationName: row.location_name,
     lastPrice: row.last_price,
     hasImage: row.has_image === 1,
     note: row.note,
     stock,
-    status: statusOf(stock, row.min_stock),
+    status: statusOf(stock, point),
   };
 }
 
