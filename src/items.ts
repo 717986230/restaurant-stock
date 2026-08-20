@@ -52,8 +52,10 @@ items.get('/', async (c) => {
   const where: string[] = ['i.user_id = ?', 'i.archived = 0'];
   const binds: unknown[] = [c.var.userId];
   if (q) {
-    where.push('i.name like ?');
-    binds.push(`%${q}%`);
+    // 用户搜 "50%" 时那个 % 是字面量，不是"匹配任意字符"。
+    // 不转义的话输入一个 % 会把全部货品都搜出来，看着像搜索坏了。
+    where.push(`i.name like ? escape '\\'`);
+    binds.push(`%${q.replace(/[\\%_]/g, (ch) => `\\${ch}`)}%`);
   }
   if (category) {
     where.push('i.category = ?');
@@ -189,21 +191,31 @@ items.post('/', async (c) => {
   return c.json({ id, restored: false }, 201);
 });
 
+/**
+ * 部分更新的取值规则：**字段没出现在请求里就保持原值**，出现了才改。
+ *
+ * 之前这里是一半合并一半覆盖——weekly_target 之类没提交会保留，
+ * 而 category / unit / min_stock / note / pack_size 没提交却会被重置成默认值
+ * （分类变"其他"、单位变"箱"、阈值变 0、备注和整箱规格清空）。
+ * 只要有客户端做部分更新，用户填了半天的档案就悄悄没了。
+ */
+function patch<T>(body: Record<string, unknown>, key: string, parse: (raw: unknown) => T) {
+  const provided = Object.prototype.hasOwnProperty.call(body, key);
+  return { on: provided ? 1 : 0, value: provided ? parse(body[key]) : null };
+}
+
 items.put('/:id', async (c) => {
   const id = Number(c.req.param('id'));
   const body = await c.req.json<Record<string, unknown>>();
   const name = requireText(body.name, '货品名称', 80);
-  const category = optionalText(body.category, 40) ?? '其他';
-  const unit = optionalText(body.unit, 16) ?? '箱';
-  const minStock = requireNumber(body.minStock ?? 0, '低库存阈值', { min: 0 });
-  // null 只用于 SQL 的“保持原值”；显式提交 0 仍表示从补货计划中移除。
-  const weeklyTarget = body.weeklyTarget === undefined
-    ? null
-    : requireNumber(body.weeklyTarget, '每周计划库存', { min: 0 });
-  const leadTimeDays = body.leadTimeDays === undefined
-    ? null
-    : requireNumber(body.leadTimeDays, '送货天数', { min: 0, max: 60 });
-  const note = optionalText(body.note, 255);
+  const category = patch(body, 'category', (v) => optionalText(v, 40) ?? '其他');
+  const unit = patch(body, 'unit', (v) => optionalText(v, 16) ?? '箱');
+  const minStock = patch(body, 'minStock', (v) => requireNumber(v ?? 0, '低库存阈值', { min: 0 }));
+  const weeklyTarget = patch(body, 'weeklyTarget', (v) => requireNumber(v, '每周计划库存', { min: 0 }));
+  const leadTimeDays = patch(body, 'leadTimeDays', (v) => requireNumber(v, '送货天数', { min: 0, max: 60 }));
+  const note = patch(body, 'note', (v) => optionalText(v, 255));
+  // 整箱规格两个字段绑在一起：提交了 packSize 才动，填空表示取消换算
+  const packOn = Object.prototype.hasOwnProperty.call(body, 'packSize') ? 1 : 0;
   const pack = readPack(body);
 
   const [clash, own] = await Promise.all([
@@ -220,12 +232,32 @@ items.put('/:id', async (c) => {
 
   const [res] = await c.env.DB.batch([
     c.env.DB.prepare(
-      `update items set name = ?, category = ?, unit = ?, pack_size = ?, pack_unit = ?,
-                        min_stock = ?, weekly_target = coalesce(?, weekly_target),
-                        lead_time_days = coalesce(?, lead_time_days),
-                        default_location_id = coalesce(?, default_location_id), note = ?, updated_at = datetime('now')
+      `update items set
+         name                = ?,
+         category            = case when ? = 1 then ? else category end,
+         unit                = case when ? = 1 then ? else unit end,
+         pack_size           = case when ? = 1 then ? else pack_size end,
+         pack_unit           = case when ? = 1 then ? else pack_unit end,
+         min_stock           = case when ? = 1 then ? else min_stock end,
+         weekly_target       = case when ? = 1 then ? else weekly_target end,
+         lead_time_days      = case when ? = 1 then ? else lead_time_days end,
+         default_location_id = coalesce(?, default_location_id),
+         note                = case when ? = 1 then ? else note end,
+         updated_at          = datetime('now')
        where id = ? and user_id = ? and archived = 0`,
-    ).bind(name, category, unit, pack.size, pack.unit, minStock, weeklyTarget, leadTimeDays, locationId, note, id, c.var.userId),
+    ).bind(
+      name,
+      category.on, category.value,
+      unit.on, unit.value,
+      packOn, pack.size,
+      packOn, pack.unit,
+      minStock.on, minStock.value,
+      weeklyTarget.on, weeklyTarget.value,
+      leadTimeDays.on, leadTimeDays.value,
+      locationId,
+      note.on, note.value,
+      id, c.var.userId,
+    ),
     c.env.DB.prepare(
       `insert into audit_events (user_id, entity_type, entity_id, action, summary)
        select ?, 'item', id, 'UPDATE', ? from items where id = ? and user_id = ? and archived = 0`,

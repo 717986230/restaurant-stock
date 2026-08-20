@@ -194,11 +194,11 @@ export const api = {
     });
   },
   /** 整场盘点一次提交：一个请求、一个事务，不会盘到一半 */
-  submitStocktake(items: { itemId: number; countedQty: number }[]) {
+  submitStocktake(items: { itemId: number; countedQty: number }[], requestId: string) {
     return request<{ ok: true; day: string; counted: number; changed: number }>('/moves/stocktake', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ items, day: today(), note: '盘点' }),
+      body: JSON.stringify({ items, requestId, day: today(), note: '盘点' }),
     });
   },
   deleteMove(id: number) {

@@ -7,12 +7,20 @@ import { askConfirm } from '@/confirm';
 const categories = ref<string[]>([]);
 const category = ref('');
 const list = ref<Item[]>([]);
+/**
+ * 见过的所有货品，跨分类累积。
+ * 盘点是"走一圈把每个架子数一遍"，中途必然要切分类；
+ * 只留当前分类的话，切走就找不回刚才数的是哪件东西了。
+ */
+const known = ref<Map<number, Item>>(new Map());
 /** 每行两个输入框：整箱数和散装数。酒水饮料点货时本来就是「3 箱零 5 瓶」这么数的。 */
 const counted = ref<Record<number, { box: string; base: string }>>({});
 const loading = ref(true);
 /** 首屏之外的刷新：保留旧内容，只压暗，不清空 */
 const refreshing = ref(false);
 const saving = ref(false);
+/** 本场盘点的幂等键，提交成功后作废 */
+const submitId = ref<string | null>(null);
 const q = ref('');
 
 /** 只过滤显示，不影响已填的数字——搜完清空搜索框，填过的还在 */
@@ -29,8 +37,12 @@ async function load() {
   if (loading.value) refreshing.value = false;
   else refreshing.value = true;
   try {
-    list.value = await api.items({ category: category.value });
-    counted.value = {};
+    const items = await api.items({ category: category.value });
+    list.value = items;
+    // 不清 counted：切分类不该把已经数好的数字抹掉
+    const merged = new Map(known.value);
+    for (const it of items) merged.set(it.id, it);
+    known.value = merged;
   } catch (e) {
     toastError(e);
   } finally {
@@ -52,8 +64,7 @@ onMounted(async () => {
 watch(category, load);
 
 /** 两个框都空着表示这行没盘，不能当成 0 —— 那会把满仓的货直接清零 */
-function total(it: Item): number | null {
-  const c = counted.value[it.id];
+function totalOf(it: Item, c: { box: string; base: string } | undefined): number | null {
   if (!c || (c.box === '' && c.base === '')) return null;
   const box = c.box === '' ? 0 : Number(c.box);
   const base = c.base === '' ? 0 : Number(c.base);
@@ -61,12 +72,34 @@ function total(it: Item): number | null {
   return round3(box * (it.packSize ?? 0) + base);
 }
 
-const pending = computed(() =>
-  list.value
-    .map((it) => ({ it, qty: total(it) }))
-    .filter((p): p is { it: Item; qty: number } => p.qty !== null)
-    .map((p) => ({ ...p, diff: round3(p.qty - p.it.stock) })),
-);
+function total(it: Item): number | null {
+  return totalOf(it, counted.value[it.id]);
+}
+
+interface PendingRow {
+  it: Item;
+  qty: number;
+  diff: number;
+}
+
+/** 从已填的数字反推，而不是从当前分类的列表——否则切走的分类就提交不上了 */
+const pending = computed<PendingRow[]>(() => {
+  const rows: PendingRow[] = [];
+  for (const [key, c] of Object.entries(counted.value)) {
+    const it = known.value.get(Number(key));
+    if (!it) continue;
+    const qty = totalOf(it, c);
+    if (qty === null) continue;
+    rows.push({ it, qty, diff: round3(qty - it.stock) });
+  }
+  return rows;
+});
+
+/** 已填但不在当前屏幕上的项数，提交前要让人知道自己交的不止眼前这些 */
+const pendingElsewhere = computed(() => {
+  const here = new Set(list.value.map((it) => it.id));
+  return pending.value.filter((p) => !here.has(p.it.id)).length;
+});
 
 async function submit() {
   if (!pending.value.length) {
@@ -84,10 +117,15 @@ async function submit() {
   try {
     // 整场一个请求：后厨信号不稳时，宁可整场失败重来，也不要盘到一半——
     // 半场盘点会让日均消耗的锚点错位，算出来的消耗速度是假的
+    // 同一场盘点复用同一个 id：超时后重试不会记成两场。成功后才作废。
+    submitId.value ??= crypto.randomUUID();
     const res = await api.submitStocktake(
       pending.value.map((p) => ({ itemId: p.it.id, countedQty: p.qty })),
+      submitId.value,
     );
     toast(res.changed ? `已盘 ${res.counted} 项，${res.changed} 项对不上账已修正` : `已盘 ${res.counted} 项，全部对得上`);
+    counted.value = {};
+    submitId.value = null;
     await load();
   } catch (e) {
     toastError(e);
@@ -167,7 +205,10 @@ async function submit() {
   </main>
 
   <div v-if="pending.length" class="submit-bar">
-    <span class="muted small">已填 {{ pending.length }} / 共 {{ list.length }} 项</span>
+    <span class="muted small">
+      已填 {{ pending.length }} 项
+      <template v-if="pendingElsewhere">（含其他分类 {{ pendingElsewhere }} 项）</template>
+    </span>
     <button class="btn btn-primary" :disabled="saving" @click="submit">
       {{ saving ? '提交中…' : '提交盘点' }}
     </button>
