@@ -194,3 +194,87 @@ moves.delete('/:id', async (c) => {
   if (res.meta.changes === 0) throw new ApiError(404, '这条记录不存在');
   return c.json({ ok: true });
 });
+
+/** 一次盘点最多提交这么多项。48 项的店离上限还远，留着是防止有人构造超大请求。 */
+const MAX_STOCKTAKE_ITEMS = 500;
+
+/**
+ * 整场盘点一次提交。
+ *
+ * 之前是每盘一项发一个请求：48 项就是 48 次往返，后厨的手机信号一断就会盘到一半。
+ * 而"盘到一半"比"没盘"更糟——日均消耗是拿两次盘点当锚点算的，
+ * 半场盘点会让一部分货品的锚点停在旧日期上，推出来的消耗速度直接失真。
+ *
+ * 现在整场放进一个 D1 batch，同一个事务里要么全进要么全不进。
+ */
+moves.post('/stocktake', async (c) => {
+  const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
+  const rows = body.items;
+  if (!Array.isArray(rows) || rows.length === 0) throw new ApiError(400, '还没有填任何实际数量');
+  if (rows.length > MAX_STOCKTAKE_ITEMS) throw new ApiError(400, `一次最多提交 ${MAX_STOCKTAKE_ITEMS} 项`);
+
+  const day = normalizeDay(body.day);
+  const note = optionalText(body.note, 255) ?? '盘点';
+  const operator = optionalText(body.operator, 40);
+
+  // 同一件货品填两次会让后一次的差额基于错误的账面数，直接拒掉而不是猜哪次算数
+  const counted = new Map<number, number>();
+  for (const raw of rows) {
+    const r = raw as Record<string, unknown>;
+    const itemId = requireNumber(r.itemId, '货品', { min: 1 });
+    const qty = requireNumber(r.countedQty, '实际数量', { min: 0 });
+    if (counted.has(itemId)) throw new ApiError(400, '同一件货品重复提交了两次');
+    counted.set(itemId, qty);
+  }
+
+  const ids = [...counted.keys()];
+  const placeholders = ids.map(() => '?').join(',');
+
+  // 一次问清楚：这些货品是不是都属于当前用户，以及各自现在的账面数
+  const { results } = await c.env.DB.prepare(
+    `select i.id, i.name, i.unit, i.min_stock, i.lead_time_days,
+            coalesce((select sum(m.qty) from stock_moves m where m.item_id = i.id), 0) as stock
+     from items i
+     where i.user_id = ? and i.archived = 0 and i.id in (${placeholders})`,
+  )
+    .bind(c.var.userId, ...ids)
+    .all<{ id: number; name: string; unit: string; min_stock: number; lead_time_days: number; stock: number }>();
+
+  if (results.length !== ids.length) throw new ApiError(404, '有货品已经被下架或不存在，请刷新后重试');
+
+  const statements = [];
+  let changed = 0;
+  for (const item of results) {
+    const actual = counted.get(item.id)!;
+    const delta = round3(actual - round3(item.stock ?? 0));
+    if (Math.abs(delta) > 0.0005) changed++;
+    statements.push(
+      c.env.DB.prepare(
+        `insert into stock_moves (user_id, item_id, kind, qty, counted_qty, note, operator, day)
+         values (?, ?, 'CHECK', ?, ?, ?, ?, ?)`,
+      ).bind(c.var.userId, item.id, delta, actual, note, operator, day),
+    );
+  }
+  statements.push(
+    c.env.DB.prepare(
+      `insert into audit_events (user_id, entity_type, entity_id, action, summary)
+       values (?, 'stocktake', null, 'CHECK', ?)`,
+    ).bind(c.var.userId, `盘点 ${results.length} 项，其中 ${changed} 项与账面不符`),
+  );
+
+  await c.env.DB.batch(statements);
+
+  return c.json(
+    {
+      ok: true,
+      day,
+      counted: results.length,
+      changed,
+      items: results.map((item) => {
+        const stock = counted.get(item.id)!;
+        return { id: item.id, name: item.name, unit: item.unit, stock };
+      }),
+    },
+    201,
+  );
+});

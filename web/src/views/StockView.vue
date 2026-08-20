@@ -13,6 +13,8 @@ const q = ref('');
 const category = ref('');
 const onlyLow = ref(false);
 const loading = ref(true);
+/** 首屏之外的刷新：保留旧内容，只压暗，不清空 */
+const refreshing = ref(false);
 const selecting = ref(false);
 const selected = ref(new Set<number>());
 const deleting = ref(false);
@@ -21,7 +23,8 @@ const sheetItem = ref<Item | null>(null);
 const sheetKind = ref<MoveKind>('IN');
 
 async function load() {
-  loading.value = true;
+  if (loading.value) refreshing.value = false;
+  else refreshing.value = true;
   try {
     const [items, sum] = await Promise.all([
       api.items({ q: q.value, category: category.value, low: onlyLow.value }),
@@ -33,6 +36,7 @@ async function load() {
     toastError(e);
   } finally {
     loading.value = false;
+    refreshing.value = false;
   }
 }
 
@@ -174,7 +178,7 @@ function openSheet(item: Item, kind: MoveKind) {
     </div>
   </header>
 
-  <main :class="['page', 'with-floating-action', { selecting }]">
+  <main :class="['page', 'with-floating-action', { selecting, 'is-refreshing': refreshing }]">
     <RouterLink v-if="summary?.needCheck" to="/stocktake" class="check-banner">
       <span class="ic" aria-hidden="true">🧮</span>
       <span class="txt">
@@ -186,8 +190,12 @@ function openSheet(item: Item, kind: MoveKind) {
 
     <div v-if="loading" class="spinner">加载中…</div>
     <div v-else-if="!list.length" class="empty">
-      <p>没有符合条件的货品</p>
-      <RouterLink to="/items/new" class="btn btn-primary">新增货品</RouterLink>
+      <p v-if="q">没有找到「{{ q }}」</p>
+      <p v-else-if="onlyLow">当前没有需要补货的货品 👍</p>
+      <p v-else-if="category">「{{ category }}」下还没有货品</p>
+      <p v-else>还没有货品</p>
+      <button v-if="q" class="btn" @click="q = ''">清空搜索</button>
+      <RouterLink v-else to="/items/new" class="btn btn-primary">新增货品</RouterLink>
     </div>
 
     <section v-for="[name, arr] in groups" v-else :key="name" class="group">

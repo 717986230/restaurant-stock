@@ -29,13 +29,20 @@ const MIN_SPAN_DAYS = 3;
 export async function loadUsage(db: D1Database, userId: number): Promise<Map<number, ItemUsage>> {
   const { results } = await db
     .prepare(
-      `with checks as (
+      `with day_checks as (
+         -- 同一天可能盘两次（上午数错了下午重数）。每天只取最后一次，
+         -- 否则窗口起点会锚在那个已经被推翻的错数上，推出来的消耗速度全错。
          select item_id, counted_qty, day,
-                row_number() over (partition by item_id order by id asc)  as rn_asc,
-                row_number() over (partition by item_id order by id desc) as rn_desc
+                row_number() over (partition by item_id, day order by id desc) as rn_in_day
          from stock_moves
          where user_id = ?1 and kind = 'CHECK' and counted_qty is not null
            and day >= date('now', '-${LOOKBACK_DAYS} day')
+       ),
+       checks as (
+         select item_id, counted_qty, day,
+                row_number() over (partition by item_id order by day asc)  as rn_asc,
+                row_number() over (partition by item_id order by day desc) as rn_desc
+         from day_checks where rn_in_day = 1
        ),
        first_check as (select item_id, counted_qty, day from checks where rn_asc = 1),
        last_check  as (select item_id, counted_qty, day from checks where rn_desc = 1),

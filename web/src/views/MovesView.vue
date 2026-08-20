@@ -8,17 +8,21 @@ import { askConfirm } from '@/confirm';
 const day = ref(today());
 const moves = ref<Move[]>([]);
 const loading = ref(true);
+/** 首屏之外的刷新：保留旧内容，只压暗，不清空 */
+const refreshing = ref(false);
 
 const KIND_LABEL: Record<MoveKind, string> = { IN: '入库', OUT: '出库', CHECK: '盘点' };
 
 async function load() {
-  loading.value = true;
+  if (loading.value) refreshing.value = false;
+  else refreshing.value = true;
   try {
     moves.value = await api.moves({ day: day.value, limit: 300 });
   } catch (e) {
     toastError(e);
   } finally {
     loading.value = false;
+    refreshing.value = false;
   }
 }
 
@@ -82,7 +86,7 @@ function timeOf(iso: string): string {
     </div>
   </header>
 
-  <main class="page">
+  <main :class="['page', { 'is-refreshing': refreshing }]">
     <div v-if="loading" class="spinner">加载中…</div>
     <div v-else-if="!moves.length" class="empty">这一天没有记录</div>
 

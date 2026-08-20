@@ -10,14 +10,24 @@ const list = ref<Item[]>([]);
 /** 每行两个输入框：整箱数和散装数。酒水饮料点货时本来就是「3 箱零 5 瓶」这么数的。 */
 const counted = ref<Record<number, { box: string; base: string }>>({});
 const loading = ref(true);
+/** 首屏之外的刷新：保留旧内容，只压暗，不清空 */
+const refreshing = ref(false);
 const saving = ref(false);
+const q = ref('');
+
+/** 只过滤显示，不影响已填的数字——搜完清空搜索框，填过的还在 */
+const visible = computed(() => {
+  const kw = q.value.trim();
+  return kw ? list.value.filter((it) => it.name.includes(kw)) : list.value;
+});
 
 function cell(id: number) {
   return (counted.value[id] ??= { box: '', base: '' });
 }
 
 async function load() {
-  loading.value = true;
+  if (loading.value) refreshing.value = false;
+  else refreshing.value = true;
   try {
     list.value = await api.items({ category: category.value });
     counted.value = {};
@@ -25,6 +35,7 @@ async function load() {
     toastError(e);
   } finally {
     loading.value = false;
+    refreshing.value = false;
   }
 }
 
@@ -70,18 +81,16 @@ async function submit() {
   })) return;
 
   saving.value = true;
-  let ok = 0;
   try {
-    // 逐条提交：一条失败不影响已经存进去的，重试时把剩下的补上就行
-    for (const p of pending.value) {
-      await api.createMove({ itemId: p.it.id, kind: 'CHECK', countedQty: p.qty, note: '盘点' });
-      ok++;
-    }
-    toast(`已盘 ${ok} 项`);
+    // 整场一个请求：后厨信号不稳时，宁可整场失败重来，也不要盘到一半——
+    // 半场盘点会让日均消耗的锚点错位，算出来的消耗速度是假的
+    const res = await api.submitStocktake(
+      pending.value.map((p) => ({ itemId: p.it.id, countedQty: p.qty })),
+    );
+    toast(res.changed ? `已盘 ${res.counted} 项，${res.changed} 项对不上账已修正` : `已盘 ${res.counted} 项，全部对得上`);
     await load();
   } catch (e) {
     toastError(e);
-    if (ok > 0) await load();
   } finally {
     saving.value = false;
   }
@@ -92,6 +101,8 @@ async function submit() {
   <header class="app-bar">
     <h1>🧮 盘点</h1>
     <p class="muted small hint">数一遍实际有多少，填进去。系统自动算出差额并记一笔盘点流水。</p>
+    <input v-model="q" class="input search" type="search" placeholder="搜货品名…" />
+
     <div class="chips">
       <button :class="['chip', { on: category === '' }]" @click="category = ''">全部</button>
       <button v-for="c in categories" :key="c" :class="['chip', { on: category === c }]" @click="category = c">
@@ -100,12 +111,13 @@ async function submit() {
     </div>
   </header>
 
-  <main class="page">
+  <main :class="['page', { 'is-refreshing': refreshing }]">
     <div v-if="loading" class="spinner">加载中…</div>
     <div v-else-if="!list.length" class="empty">这个分类下没有货品</div>
+    <div v-else-if="!visible.length" class="empty">没有匹配「{{ q }}」的货品</div>
 
     <ul v-else class="rows">
-      <li v-for="it in list" :key="it.id">
+      <li v-for="it in visible" :key="it.id">
         <div class="head">
           <span class="name">{{ it.name }}</span>
           <span class="diff" :class="{ plus: (total(it) ?? it.stock) - it.stock > 0.0005, minus: (total(it) ?? it.stock) - it.stock < -0.0005 }">
@@ -155,7 +167,7 @@ async function submit() {
   </main>
 
   <div v-if="pending.length" class="submit-bar">
-    <span class="muted small">已填 {{ pending.length }} 项</span>
+    <span class="muted small">已填 {{ pending.length }} / 共 {{ list.length }} 项</span>
     <button class="btn btn-primary" :disabled="saving" @click="submit">
       {{ saving ? '提交中…' : '提交盘点' }}
     </button>
@@ -165,6 +177,10 @@ async function submit() {
 <style scoped>
 .hint {
   margin: 6px 0 10px;
+}
+
+.search {
+  margin-bottom: 10px;
 }
 
 .chips {
