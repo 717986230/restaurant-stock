@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
-import { useRoute, useRouter } from 'vue-router';
-import { api, fmt, round3, type ReceivingImageKind, type ReceivingSlipDetail } from '@/api';
+import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router';
+import { api, fmt, money, round3, type ReceivingImageKind, type ReceivingSlipDetail } from '@/api';
 import { shrinkImage } from '@/image';
 import { toast, toastError } from '@/toast';
 import { askConfirm } from '@/confirm';
@@ -53,6 +53,15 @@ function amountOf(r: RowDraft): number | null {
   return null;
 }
 
+/** 表单当前内容的快照，跟上次保存时的比一比就知道有没有没存的改动 */
+function snapshot(): string {
+  return JSON.stringify({ day: day.value, supplierName: supplierName.value.trim(), note: note.value.trim(), rows: rows.value });
+}
+const savedSnapshot = ref('');
+const dirty = computed(() => !readOnly.value && snapshot() !== savedSnapshot.value);
+/** 删除后是主动跳走的，别再拦一次"还没保存" */
+const skipLeaveGuard = ref(false);
+
 async function load() {
   try {
     const data = await api.receivingSlip(id);
@@ -68,6 +77,7 @@ async function load() {
       amount: l.amount == null ? '' : String(l.amount),
       note: l.note ?? '',
     }));
+    savedSnapshot.value = snapshot();
   } catch (e) {
     toastError(e);
   } finally {
@@ -76,6 +86,18 @@ async function load() {
 }
 
 onMounted(load);
+
+// 后厨误触返回、或者顺手点了底部导航，改了一半的表格就没了。
+// 这里拦的是所有离开方式（返回键、底部标签页），不只是左上角那个箭头。
+onBeforeRouteLeave(async () => {
+  if (skipLeaveGuard.value || !dirty.value) return true;
+  return await askConfirm({
+    title: '还没保存，确定离开？',
+    message: '刚改的内容会丢掉，回来要重新填一遍。',
+    confirmText: '直接离开',
+    tone: 'danger',
+  });
+});
 
 function addRow() {
   rows.value.push({ itemName: '', qty: '', unit: '', unitPrice: '', amount: '', note: '' });
@@ -158,6 +180,17 @@ async function save() {
       amount: amountOf(r),
       note: r.note.trim() || null,
     }));
+
+  // 保存是整张替换明细：误删了行、或者 AI 识别把手改过的内容覆盖了，存下去就定了。
+  // 所以这里顺便把要进结账单的那个金额摆出来，让人在写进账之前最后核一眼。
+  if (!await askConfirm({
+    title: lines.length ? '保存这张对货单？' : '保存一张没有明细的单？',
+    message: lines.length
+      ? `共 ${lines.length} 项货品，合计 ${money(total.value)}。这个金额会进结账单，确认前请核对一遍。`
+      : '还没填任何货品，保存后这张单在结账导出里会显示成「还没填货品明细」。',
+    confirmText: '确认保存',
+  })) return;
+
   saving.value = true;
   try {
     await api.updateReceivingSlip(id, {
@@ -181,6 +214,7 @@ async function remove() {
   try {
     await api.deleteReceivingSlip(id);
     toast('已删除');
+    skipLeaveGuard.value = true;
     router.replace('/receiving');
   } catch (e) {
     toastError(e);
