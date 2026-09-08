@@ -532,6 +532,151 @@ receiving.post('/slips/:id/recognize', async (c) => {
   });
 });
 
+/**
+ * 月/季/年汇总。按单据日期分组，不管结没结账——结账是付款动作，
+ * 而这张表回答的是"这段时间进了多少货"，跟发票日期对得上。
+ *
+ * SQLite 没有日期分组函数，slip_day 是 'YYYY-MM-DD' 定长字符串，直接截。
+ * 季度：月份 1-3 → Q1，(月 + 2) / 3 整除刚好落到 1/2/3/4。
+ */
+const PERIOD_KEY = {
+  month: `substr(s.slip_day, 1, 7)`,
+  quarter: `substr(s.slip_day, 1, 4) || '-Q' || ((cast(substr(s.slip_day, 6, 2) as integer) + 2) / 3)`,
+  year: `substr(s.slip_day, 1, 4)`,
+} as const;
+
+type Period = keyof typeof PERIOD_KEY;
+
+function readPeriod(raw: string | undefined): Period {
+  return raw === 'quarter' || raw === 'year' ? raw : 'month';
+}
+
+/** 一张单的钱只算一次：明细行数不该影响金额合计 */
+const SLIP_MONEY = `
+  coalesce(sum(s.net_amount), 0)   as net,
+  coalesce(sum(s.tax_amount), 0)   as tax,
+  coalesce(sum(s.total_amount), 0) as paid,
+  count(*)                         as slip_count
+`;
+
+receiving.get('/summary', async (c) => {
+  const period = readPeriod(c.req.query('period'));
+  const key = PERIOD_KEY[period];
+  const focus = c.req.query('key')?.trim();
+
+  const { results: buckets } = await c.env.DB.prepare(
+    `select ${key} as period_key, ${SLIP_MONEY}
+     from receiving_slips s
+     where s.user_id = ?
+     group by period_key
+     order by period_key desc
+     limit 36`,
+  ).bind(c.var.userId).all<{ period_key: string; net: number; tax: number; paid: number; slip_count: number }>();
+
+  // 环比：按 key 倒序排的，所以"上一期"就是数组里的下一个。
+  // 中间整期没进货就没有那一行，这时相邻的两个 key 并不连续——
+  // 与其猜，不如把上一期的 key 一起返回，页面上写清楚在跟哪一期比。
+  const periods = buckets.map((b, i) => {
+    const prev = buckets[i + 1];
+    const paid = round3(b.paid);
+    const prevPaid = prev ? round3(prev.paid) : null;
+    return {
+      key: b.period_key,
+      slipCount: b.slip_count,
+      net: round3(b.net),
+      tax: round3(b.tax),
+      paid,
+      prevKey: prev?.period_key ?? null,
+      prevPaid,
+      // 上一期是 0 的话算不出百分比（除零），只报绝对差额。
+      // 百分比留一位小数就够，"+306.539%" 那种精度对花钱多少没有意义
+      deltaPct: prevPaid ? Math.round(((paid - prevPaid) / prevPaid) * 1000) / 10 : null,
+      delta: prevPaid === null ? null : round3(paid - prevPaid),
+    };
+  });
+
+  if (!focus) return c.json({ period, periods });
+
+  const [suppliers, items] = await Promise.all([
+    c.env.DB.prepare(
+      `select coalesce(s.supplier_name, '（没填供应商）') as name, ${SLIP_MONEY}
+       from receiving_slips s
+       where s.user_id = ? and ${key} = ?
+       group by name
+       order by paid desc, slip_count desc
+       limit 100`,
+    ).bind(c.var.userId, focus).all<{ name: string; net: number; tax: number; paid: number; slip_count: number }>(),
+    c.env.DB.prepare(
+      `select l.item_name as name, count(*) as line_count,
+              coalesce(sum(l.qty), 0) as qty, coalesce(sum(l.amount), 0) as amount
+       from receiving_slip_lines l
+       join receiving_slips s on s.id = l.slip_id and s.user_id = l.user_id
+       where s.user_id = ? and ${key} = ?
+       group by l.item_name
+       order by amount desc, line_count desc
+       limit 100`,
+    ).bind(c.var.userId, focus).all<{ name: string; line_count: number; qty: number; amount: number }>(),
+  ]);
+
+  return c.json({
+    period,
+    periods,
+    focus,
+    bySupplier: suppliers.results.map((r) => ({
+      name: r.name,
+      slipCount: r.slip_count,
+      net: round3(r.net),
+      tax: round3(r.tax),
+      paid: round3(r.paid),
+    })),
+    // 货品名是 AI 从单据上认的，拼写不一致的话同一种货会分成几行，页面上要说明
+    byItem: items.results.map((r) => ({
+      name: r.name,
+      lineCount: r.line_count,
+      qty: round3(r.qty),
+      amount: round3(r.amount),
+    })),
+  });
+});
+
+receiving.get('/summary/export.csv', async (c) => {
+  const period = readPeriod(c.req.query('period'));
+  const key = PERIOD_KEY[period];
+
+  const [buckets, suppliers] = await Promise.all([
+    c.env.DB.prepare(
+      `select ${key} as period_key, ${SLIP_MONEY}
+       from receiving_slips s where s.user_id = ?
+       group by period_key order by period_key desc limit 36`,
+    ).bind(c.var.userId).all<{ period_key: string; net: number; tax: number; paid: number; slip_count: number }>(),
+    c.env.DB.prepare(
+      `select ${key} as period_key, coalesce(s.supplier_name, '（没填供应商）') as name, ${SLIP_MONEY}
+       from receiving_slips s where s.user_id = ?
+       group by period_key, name order by period_key desc, paid desc limit 500`,
+    ).bind(c.var.userId).all<{ period_key: string; name: string; net: number; tax: number; paid: number; slip_count: number }>(),
+  ]);
+
+  const label = { month: '月度', quarter: '季度', year: '年度' }[period];
+  const rows: string[] = [];
+  rows.push([`${label}汇总`, '单据数', '净额', '税额', '实付'].map(csvCell).join(','));
+  for (const b of buckets.results) {
+    rows.push([b.period_key, b.slip_count, round3(b.net), round3(b.tax), round3(b.paid)].map(csvCell).join(','));
+  }
+  rows.push('');
+  rows.push(['期间', '供应商', '单据数', '净额', '税额', '实付'].map(csvCell).join(','));
+  for (const r of suppliers.results) {
+    rows.push([r.period_key, r.name, r.slip_count, round3(r.net), round3(r.tax), round3(r.paid)].map(csvCell).join(','));
+  }
+
+  const body = '﻿' + rows.join('\r\n');
+  return new Response(body, {
+    headers: {
+      'content-type': 'text/csv; charset=utf-8',
+      'content-disposition': `attachment; filename="summary-${period}-${normalizeDay(undefined)}.csv"`,
+    },
+  });
+});
+
 receiving.get('/settlement/status', async (c) => {
   // 结账只会结「slip_day <= 选定日期」的单子，所以这里的待结账张数也得按同一个
   // 日期算。不然页面显示"待结账 3 张"、点下去却告诉你这段时间一张都没有。

@@ -183,6 +183,45 @@ export interface RecognizeResult {
   failedCount: number;
 }
 
+export type SummaryPeriod = 'month' | 'quarter' | 'year';
+
+export interface SummaryBucket {
+  key: string;
+  slipCount: number;
+  net: number;
+  tax: number;
+  /** 实付，进结账的那个口径 */
+  paid: number;
+  /** 上一期的 key：中间整期没进货时相邻两期并不连续，页面要写清楚在跟谁比 */
+  prevKey: string | null;
+  prevPaid: number | null;
+  deltaPct: number | null;
+  delta: number | null;
+}
+
+export interface SummarySupplierRow {
+  name: string;
+  slipCount: number;
+  net: number;
+  tax: number;
+  paid: number;
+}
+
+export interface SummaryItemRow {
+  name: string;
+  lineCount: number;
+  qty: number;
+  amount: number;
+}
+
+export interface SummaryResult {
+  period: SummaryPeriod;
+  periods: SummaryBucket[];
+  focus?: string;
+  bySupplier?: SummarySupplierRow[];
+  byItem?: SummaryItemRow[];
+}
+
 export interface SettlementStatus {
   lastSettledDay: string | null;
   pendingCount: number;
@@ -450,6 +489,11 @@ export const api = {
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ imageIds }),
     });
+  },
+  purchaseSummary(period: SummaryPeriod, key?: string) {
+    const q = new URLSearchParams({ period });
+    if (key) q.set('key', key);
+    return request<SummaryResult>(`/receiving/summary?${q}`);
   },
   settlementStatus(toDay: string) {
     return request<SettlementStatus>(`/receiving/settlement/status?toDay=${encodeURIComponent(toDay)}`);

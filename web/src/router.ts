@@ -16,6 +16,7 @@ export const router = createRouter({
     { path: '/receiving', name: 'receiving', component: () => import('@/views/ReceivingListView.vue') },
     { path: '/receiving/:id', name: 'receiving-slip', component: () => import('@/views/ReceivingSlipView.vue') },
     { path: '/settlement', name: 'settlement', component: () => import('@/views/SettlementView.vue') },
+    { path: '/summary', name: 'summary', component: () => import('@/views/SummaryView.vue') },
     { path: '/more', name: 'more', component: () => import('@/views/MoreView.vue') },
     { path: '/:pathMatch(.*)*', redirect: '/' },
   ],

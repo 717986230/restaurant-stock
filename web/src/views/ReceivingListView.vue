@@ -40,7 +40,10 @@ async function createNew() {
   <header class="app-bar">
     <div class="title-row">
       <h1>📎 对货记账</h1>
-      <RouterLink to="/settlement" class="to-settlement">💰 结账</RouterLink>
+      <span class="head-links">
+        <RouterLink to="/summary" class="to-settlement">📊 汇总</RouterLink>
+        <RouterLink to="/settlement" class="to-settlement">💰 结账</RouterLink>
+      </span>
     </div>
     <div class="chips">
       <button :class="['chip', { on: tab === '0' }]" @click="tab = '0'">待结账</button>
@@ -85,6 +88,12 @@ async function createNew() {
   align-items: center;
   justify-content: space-between;
   gap: 12px;
+}
+
+.head-links {
+  flex: none;
+  display: flex;
+  gap: 14px;
 }
 
 .to-settlement {
