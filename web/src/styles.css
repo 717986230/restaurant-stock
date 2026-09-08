@@ -194,7 +194,7 @@ a {
   bottom: 0;
   z-index: 30;
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(5, 1fr);
   background: var(--card);
   border-top: 1px solid var(--line);
   padding-bottom: env(safe-area-inset-bottom);
@@ -209,6 +209,8 @@ a {
   flex-direction: column;
   align-items: center;
   gap: 2px;
+  /* 五个标签挤在一行，最窄的手机上也不能让「对货记账」折行 */
+  white-space: nowrap;
 }
 
 .tabbar a.active {

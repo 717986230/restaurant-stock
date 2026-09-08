@@ -13,6 +13,9 @@
 - **盘点** — 按分类逐项填实际数量，系统自动算差额并记一笔盘点流水
 - **货品图片** — 手机直接拍照上传，前端先压到 900px / 约 100KB 再传，采购时不认错货
 - **补货清单** — 每件货品可设每周计划库存，按“计划 − 现有”计算采购量；整箱货自动向上取整，一键复制发给供应商
+- **采购单** — 先记「订了什么」，到货时逐项核对实收数量，确认后自动入库并推进采购单状态
+- **对货记账** — 纸质对货单拍照存档，AI 识别成表格供人工核对；货物照片一起留证
+- **结账** — 选一个日期把还没结过账的对货单打包导出，结过的自动跳过，不会重复导出同一批数据
 - **导出 CSV** — 用 Excel 打开，发给会计
 
 库存不缓存：任意时刻的结存都是这件货品所有流水之和，账永远对得上。
@@ -33,9 +36,12 @@
 │   ├── index.ts        路由入口、汇总、CSV 导出
 │   ├── items.ts        货品档案 + 图片上传
 │   ├── moves.ts        出入库 / 盘点流水
+│   ├── suppliers.ts    供应商档案
+│   ├── purchases.ts    采购单 + 到货核对入库
+│   ├── receiving.ts    对货单照片、AI 识别、结账导出
 │   └── types.ts        类型、校验、库存状态判定
 ├── web/                Vue 3 前端（构建产物输出到 public/）
-│   └── src/views/      库存 / 流水 / 盘点 / 详情 / 编辑 / 更多
+│   └── src/views/      库存 / 流水 / 盘点 / 对货记账 / 更多
 ├── migrations/         D1 数据库迁移
 ├── src/seed.ts         新账号的初始物料清单（注册时按用户写入）
 └── wrangler.jsonc      Cloudflare 部署配置
@@ -49,9 +55,11 @@
 | 货品 | `items`、`item_images` | 货品档案、编码、默认供应商/仓位和图片 |
 | 库存 | `stock_moves`、`storage_locations` | 出入库与盘点账本；请求幂等，支持多仓位扩展 |
 | 采购 | `suppliers`、`item_suppliers`、`purchase_orders`、`purchase_order_lines` | 供应商、货品供应关系、采购单和收货进度 |
+| 对货记账 | `receiving_slips`、`receiving_slip_lines`、`receiving_slip_images`、`settlements` | 纸质对货单的照片、识别出来的表格，和按日期打包的结账批次 |
 | 审计 | `audit_events` | 独立记录账号、货品和库存操作，便于追溯 |
 
 `stock_moves` 仍是库存结存的唯一事实来源。新增采购与仓位表不缓存结存，避免出现两套数量互相打架。
+对货记账是另一套独立数据：它记的是「跟供应商对账用的原始凭证」，不参与库存结存的计算。
 所有业务表都按 `user_id` 隔离；新增字段和表由 migration 增量创建，升级不会重建或清空现有库存流水。
 
 补货规则中，`min_stock` 是低库存预警线，回答“什么时候该补”；`weekly_target` 是本周补货后的目标结存，
@@ -66,6 +74,10 @@ npm run dev          # http://localhost:8787
 ```
 
 想要前端热更新，另开一个终端跑 `npm run dev:web`（5173 端口，接口自动代理到 8787）。
+
+对货单识别用的 Workers AI 没有本地模拟，`wrangler dev` 会把这个绑定转发到 Cloudflare，
+所以本地起服务前要先 `npx wrangler login`。只想调库存那部分、不碰识别功能的话，
+把 [wrangler.jsonc](wrangler.jsonc) 里的 `ai` 绑定临时注释掉就能离线跑。
 
 ## 部署到 Cloudflare
 

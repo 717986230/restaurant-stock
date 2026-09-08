@@ -38,10 +38,10 @@ async function createNew() {
 
 <template>
   <header class="app-bar">
-    <h1>
-      <button class="back" @click="router.back()" aria-label="返回">‹</button>
-      📎 对货单
-    </h1>
+    <div class="title-row">
+      <h1>📎 对货记账</h1>
+      <RouterLink to="/settlement" class="to-settlement">💰 结账</RouterLink>
+    </div>
     <div class="chips">
       <button :class="['chip', { on: tab === '0' }]" @click="tab = '0'">待结账</button>
       <button :class="['chip', { on: tab === '1' }]" @click="tab = '1'">已结账</button>
@@ -80,11 +80,18 @@ async function createNew() {
 </template>
 
 <style scoped>
-.back {
-  font-size: 26px;
-  line-height: 1;
-  color: var(--muted);
-  padding: 0 6px 0 0;
+.title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.to-settlement {
+  flex: none;
+  color: var(--brand);
+  font-size: 14px;
+  font-weight: 600;
 }
 
 .chips {
