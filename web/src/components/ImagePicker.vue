@@ -72,7 +72,6 @@ async function remove() {
       ref="fileInput"
       type="file"
       accept="image/*"
-      capture="environment"
       hidden
       @change="onPick"
     />

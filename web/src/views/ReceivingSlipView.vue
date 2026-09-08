@@ -220,10 +220,10 @@ async function remove() {
           </div>
         </a>
         <button v-if="!readOnly" class="add-photo" :disabled="uploading === 'SLIP'" @click="slipFileInput?.click()">
-          <span>{{ uploading === 'SLIP' ? '上传中…' : '＋ 拍照' }}</span>
+          <span>{{ uploading === 'SLIP' ? '上传中…' : '＋ 拍照/选图' }}</span>
         </button>
       </div>
-      <input ref="slipFileInput" type="file" accept="image/*" capture="environment" hidden @change="uploadPhoto($event, 'SLIP')" />
+      <input ref="slipFileInput" type="file" accept="image/*" hidden @change="uploadPhoto($event, 'SLIP')" />
     </div>
 
     <div class="field">
@@ -236,10 +236,10 @@ async function remove() {
           </div>
         </a>
         <button v-if="!readOnly" class="add-photo" :disabled="uploading === 'GOODS'" @click="goodsFileInput?.click()">
-          <span>{{ uploading === 'GOODS' ? '上传中…' : '＋ 拍照' }}</span>
+          <span>{{ uploading === 'GOODS' ? '上传中…' : '＋ 拍照/选图' }}</span>
         </button>
       </div>
-      <input ref="goodsFileInput" type="file" accept="image/*" capture="environment" hidden @change="uploadPhoto($event, 'GOODS')" />
+      <input ref="goodsFileInput" type="file" accept="image/*" hidden @change="uploadPhoto($event, 'GOODS')" />
     </div>
 
     <div class="field">
