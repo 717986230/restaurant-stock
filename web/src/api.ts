@@ -74,6 +74,52 @@ export interface User {
   currency: string;
 }
 
+export interface Supplier {
+  id: number;
+  name: string;
+  contactName: string | null;
+  phone: string | null;
+  email: string | null;
+  address: string | null;
+  note: string | null;
+}
+
+export type PurchaseStatus = 'ORDERED' | 'PARTIAL' | 'RECEIVED' | 'CANCELLED';
+
+export interface PurchaseOrder {
+  id: number;
+  supplierId: number | null;
+  supplierName: string | null;
+  orderNo: string | null;
+  status: PurchaseStatus;
+  orderedDay: string | null;
+  expectedDay: string | null;
+  receivedDay: string | null;
+  note: string | null;
+  createdAt: string;
+  lineCount: number;
+  orderedTotal: number;
+  receivedTotal: number;
+}
+
+export interface PurchaseOrderLine {
+  id: number;
+  itemId: number;
+  itemName: string;
+  unit: string;
+  packSize: number | null;
+  packUnit: string | null;
+  orderedQty: number;
+  receivedQty: number;
+  remainingQty: number;
+  unitPrice: number | null;
+  note: string | null;
+}
+
+export interface PurchaseOrderDetail extends PurchaseOrder {
+  lines: PurchaseOrderLine[];
+}
+
 /** null 表示没登录，App 会盖上登录页；任何一个接口 401 都会把它清掉 */
 export const currentUser = ref<User | null>(null);
 
@@ -206,6 +252,71 @@ export const api = {
   },
   summary() {
     return request<Summary>(`/summary?day=${today()}`);
+  },
+  suppliers() {
+    return request<Supplier[]>('/suppliers');
+  },
+  createSupplier(body: Partial<Supplier>) {
+    return request<{ id: number }>('/suppliers', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  },
+  updateSupplier(id: number, body: Partial<Supplier>) {
+    return request<{ ok: true }>(`/suppliers/${id}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  },
+  archiveSupplier(id: number) {
+    return request<{ ok: true }>(`/suppliers/${id}`, { method: 'DELETE' });
+  },
+  purchases(status?: PurchaseStatus | '') {
+    const qs = status ? `?status=${status}` : '';
+    return request<PurchaseOrder[]>(`/purchases${qs}`);
+  },
+  purchase(id: number) {
+    return request<PurchaseOrderDetail>(`/purchases/${id}`);
+  },
+  createPurchase(body: {
+    supplierId?: number | null;
+    orderNo?: string | null;
+    expectedDay?: string | null;
+    note?: string | null;
+    lines: { itemId: number; orderedQty: number; unitPrice?: number | null; note?: string | null }[];
+  }) {
+    return request<{ id: number }>('/purchases', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  },
+  updatePurchase(id: number, body: { expectedDay?: string | null; note?: string | null }) {
+    return request<{ ok: true }>(`/purchases/${id}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  },
+  cancelPurchase(id: number) {
+    return request<{ ok: true }>(`/purchases/${id}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ status: 'CANCELLED' }),
+    });
+  },
+  /** 对货记账：核对实收数量后一次性提交，记库存流水并推进采购单状态 */
+  receivePurchase(id: number, lines: { lineId: number; receivedQty: number }[], requestId: string) {
+    return request<{ ok: true; status: PurchaseStatus; over: boolean; items: { id: number; name: string; unit: string; receivedQty: number }[] }>(
+      `/purchases/${id}/receive`,
+      {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ lines, requestId, day: today() }),
+      },
+    );
   },
 };
 

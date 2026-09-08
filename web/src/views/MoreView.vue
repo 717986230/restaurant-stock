@@ -140,6 +140,12 @@ async function copyShoppingList() {
         </RouterLink>
       </li>
     </ul>
+    <h2 class="sec">采购</h2>
+    <div class="links">
+      <RouterLink to="/purchases" class="link">🧾 采购单</RouterLink>
+      <RouterLink to="/suppliers" class="link">🚚 供应商</RouterLink>
+    </div>
+
     <h2 class="sec">账号</h2>
     <div class="links">
       <div class="link who">

@@ -144,3 +144,8 @@ export function normalizeDay(value: unknown): string {
   if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
   return new Date().toISOString().slice(0, 10);
 }
+
+/** 跟 normalizeDay 的区别：这里没填就是没填，不会兜底成今天——预计到货日之类的字段允许为空 */
+export function optionalDay(value: unknown): string | null {
+  return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value) ? value : null;
+}
