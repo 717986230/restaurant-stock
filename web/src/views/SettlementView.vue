@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue';
+import { onMounted, ref, watch } from 'vue';
 import { useRouter } from 'vue-router';
 import { api, fmt, money, today, type Settlement, type SettlementStatus } from '@/api';
 import { toast, toastError } from '@/toast';
@@ -14,7 +14,7 @@ const settling = ref(false);
 
 async function load() {
   try {
-    [status.value, history.value] = await Promise.all([api.settlementStatus(), api.settlements()]);
+    [status.value, history.value] = await Promise.all([api.settlementStatus(toDay.value), api.settlements()]);
   } catch (e) {
     toastError(e);
   } finally {
@@ -23,6 +23,8 @@ async function load() {
 }
 
 onMounted(load);
+// 改结账日期就要重算待结账张数，页面上的数字得跟点下去真正会结的那批对上
+watch(toDay, load);
 
 function downloadUrl(id: number) {
   return `/api/receiving/settlements/${id}/export.csv`;

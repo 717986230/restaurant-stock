@@ -436,8 +436,8 @@ export const api = {
       body: JSON.stringify({ imageIds }),
     });
   },
-  settlementStatus() {
-    return request<SettlementStatus>('/receiving/settlement/status');
+  settlementStatus(toDay: string) {
+    return request<SettlementStatus>(`/receiving/settlement/status?toDay=${encodeURIComponent(toDay)}`);
   },
   settlements() {
     return request<Settlement[]>('/receiving/settlements');

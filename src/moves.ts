@@ -9,6 +9,7 @@ import {
   type AppEnv,
   type MoveKind,
 } from './types';
+import { loadUsage, reorderPointOf } from './usage';
 
 export const moves = new Hono<AppEnv>();
 
@@ -94,10 +95,17 @@ moves.post('/', async (c) => {
   const kind = body.kind as MoveKind;
   if (kind !== 'IN' && kind !== 'OUT' && kind !== 'CHECK') throw new ApiError(400, '未知的操作类型');
 
-  const item = await c.env.DB.prepare('select id, name, unit, min_stock from items where id = ? and user_id = ? and archived = 0')
+  const item = await c.env.DB.prepare(
+    'select id, name, unit, min_stock, lead_time_days from items where id = ? and user_id = ? and archived = 0',
+  )
     .bind(itemId, c.var.userId)
-    .first<{ id: number; name: string; unit: string; min_stock: number }>();
+    .first<{ id: number; name: string; unit: string; min_stock: number; lead_time_days: number }>();
   if (!item) throw new ApiError(404, '货品不存在');
+
+  // 状态要跟库存列表用同一把尺子：那边标红用的是按消耗算出来的再订货点，
+  // 这里直接拿 min_stock 判的话，同一件货在弹窗里显示"正常"、回到列表却是红的。
+  const usage = await loadUsage(c.env.DB, c.var.userId);
+  const { point: reorderPoint } = reorderPointOf(usage.get(itemId), item.lead_time_days, item.min_stock);
 
   const day = normalizeDay(body.day);
   const note = optionalText(body.note, 255);
@@ -117,7 +125,7 @@ moves.post('/', async (c) => {
         itemName: item.name,
         unit: item.unit,
         stock,
-        status: statusOf(stock, item.min_stock),
+        status: statusOf(stock, reorderPoint),
       });
     }
   }
@@ -169,7 +177,7 @@ moves.post('/', async (c) => {
       itemName: item.name,
       unit: item.unit,
       stock,
-      status: statusOf(stock, item.min_stock),
+      status: statusOf(stock, reorderPoint),
     },
     201,
   );

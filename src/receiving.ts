@@ -3,7 +3,9 @@ import { ApiError, normalizeDay, optionalDay, optionalText, requireNumber, requi
 
 export const receiving = new Hono<AppEnv>();
 
-const VISION_MODEL = '@cf/meta/llama-3.2-11b-vision-instruct';
+// llama-3.2-11b-vision 走的是 image/prompt 那套老入参，而且要先发一次 "agree"
+// 接受 Meta 许可才能用；换成原生多模态的 Scout，标准 messages + image_url 入参。
+const VISION_MODEL = '@cf/meta/llama-4-scout-17b-16e-instruct';
 
 const RECOGNIZE_PROMPT = `你在识别一张中文餐馆供应商送货时留下的纸质对货单（可能是手写或打印的送货单/对账单）。
 仔细看图片里的表格或清单，把每一行货品整理成 JSON，只输出 JSON 本身，不要输出任何解释文字或代码块标记。
@@ -47,6 +49,17 @@ function asNumberOrNull(v: unknown): number | null {
 
 function asTextOrNull(v: unknown): string | null {
   return typeof v === 'string' && v.trim() ? v.trim().slice(0, 80) : null;
+}
+
+/** 模型只收 data URI 形式的图（文档明确写了 HTTP URL 不认），分段转是因为
+ *  一次性展开十万个字节做 fromCharCode 会把调用栈撑爆 */
+function toDataUrl(bytes: Uint8Array, mime: string): string {
+  let binary = '';
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return `data:${mime};base64,${btoa(binary)}`;
 }
 
 function toDraftLines(raw: unknown): DraftLine[] {
@@ -324,10 +337,10 @@ receiving.post('/slips/:id/recognize', async (c) => {
 
   const placeholders = imageIds.map(() => '?').join(',');
   const { results: rows } = await c.env.DB.prepare(
-    `select im.id, im.bytes from receiving_slip_images im
+    `select im.id, im.mime, im.bytes from receiving_slip_images im
      join receiving_slips s on s.id = im.slip_id
      where im.slip_id = ? and s.user_id = ? and im.kind = 'SLIP' and im.id in (${placeholders})`,
-  ).bind(id, c.var.userId, ...imageIds).all<{ id: number; bytes: ArrayBuffer | number[] }>();
+  ).bind(id, c.var.userId, ...imageIds).all<{ id: number; mime: string; bytes: ArrayBuffer | number[] }>();
   if (rows.length !== imageIds.length) throw new ApiError(404, '有照片不存在');
   const byId = new Map(rows.map((r) => [r.id, r]));
 
@@ -335,13 +348,21 @@ receiving.post('/slips/:id/recognize', async (c) => {
   let day: string | null = null;
   const lines: DraftLine[] = [];
   let failedCount = 0;
+  let lastError = '';
   for (const imageId of imageIds) {
     const row = byId.get(imageId)!;
     const bytes = row.bytes instanceof ArrayBuffer ? new Uint8Array(row.bytes) : new Uint8Array(row.bytes as number[]);
     try {
       const result = await c.env.AI.run(VISION_MODEL, {
-        image: Array.from(bytes),
-        prompt: RECOGNIZE_PROMPT,
+        messages: [
+          {
+            role: 'user',
+            content: [
+              { type: 'text', text: RECOGNIZE_PROMPT },
+              { type: 'image_url', image_url: { url: toDataUrl(bytes, row.mime) } },
+            ],
+          },
+        ],
         max_tokens: 2048,
       });
       const text = (result as { response?: string }).response ?? '';
@@ -349,22 +370,30 @@ receiving.post('/slips/:id/recognize', async (c) => {
       if (!supplierName) supplierName = asTextOrNull(parsed.supplierName);
       if (!day) day = optionalDay(parsed.day);
       lines.push(...toDraftLines(parsed.lines));
-    } catch {
+    } catch (err) {
       failedCount++;
+      // 全靠"AI 识别暂时不可用"这一句排查过一次，什么都查不出来，所以把真实原因留在日志里
+      lastError = err instanceof Error ? err.message : String(err);
+      console.error('recognize failed', { slipId: id, imageId, error: lastError });
     }
   }
 
-  if (failedCount === imageIds.length) throw new ApiError(502, 'AI 识别暂时不可用，请重试一次或手动填写');
+  if (failedCount === imageIds.length) {
+    throw new ApiError(502, `AI 识别暂时不可用（${lastError.slice(0, 120)}），请重试一次或手动填写`);
+  }
   return c.json({ supplierName, day, lines, recognizedCount: imageIds.length - failedCount, failedCount });
 });
 
 receiving.get('/settlement/status', async (c) => {
+  // 结账只会结「slip_day <= 选定日期」的单子，所以这里的待结账张数也得按同一个
+  // 日期算。不然页面显示"待结账 3 张"、点下去却告诉你这段时间一张都没有。
+  const toDay = normalizeDay(c.req.query('toDay'));
   const [last, pending] = await Promise.all([
     c.env.DB.prepare('select max(to_day) as day from settlements where user_id = ?').bind(c.var.userId).first<{ day: string | null }>(),
     c.env.DB.prepare(
       `select count(*) as n, coalesce(sum(total_amount), 0) as total
-       from receiving_slips where user_id = ? and settled_at is null`,
-    ).bind(c.var.userId).first<{ n: number; total: number }>(),
+       from receiving_slips where user_id = ? and settled_at is null and slip_day <= ?`,
+    ).bind(c.var.userId, toDay).first<{ n: number; total: number }>(),
   ]);
   return c.json({
     lastSettledDay: last?.day ?? null,
@@ -435,18 +464,20 @@ receiving.get('/settlements/:id/export.csv', async (c) => {
     .first<{ to_day: string }>();
   if (!settlement) throw new ApiError(404, '结账记录不存在');
 
+  // 左连接：明细还没填的对货单也要出现在账单里。之前用内连接，
+  // 一张只拍了照片没填表格的单子会整张从导出里消失，账面上凭空少一笔。
   const { results } = await c.env.DB.prepare(
     `select s.slip_day, s.supplier_name, s.note as slip_note,
             l.item_name, l.qty, l.unit, l.unit_price, l.amount, l.note as line_note
      from receiving_slips s
-     join receiving_slip_lines l on l.slip_id = s.id
+     left join receiving_slip_lines l on l.slip_id = s.id and l.user_id = s.user_id
      where s.settlement_id = ? and s.user_id = ?
      order by s.slip_day, s.id, l.line_no`,
   ).bind(id, c.var.userId).all<{
     slip_day: string;
     supplier_name: string | null;
     slip_note: string | null;
-    item_name: string;
+    item_name: string | null;
     qty: number | null;
     unit: string | null;
     unit_price: number | null;
@@ -456,11 +487,26 @@ receiving.get('/settlements/:id/export.csv', async (c) => {
 
   const header = ['日期', '供应商', '货品', '数量', '单位', '单价', '金额', '单据备注', '明细备注'];
   const lines = results.map((r) =>
-    [r.slip_day, r.supplier_name ?? '', r.item_name, r.qty ?? '', r.unit ?? '', r.unit_price ?? '', r.amount ?? '', r.slip_note ?? '', r.line_note ?? '']
+    [
+      r.slip_day,
+      r.supplier_name ?? '',
+      r.item_name ?? '（这张单还没填货品明细）',
+      r.qty ?? '',
+      r.unit ?? '',
+      r.unit_price ?? '',
+      r.amount ?? '',
+      r.slip_note ?? '',
+      r.line_note ?? '',
+    ]
       .map(csvCell)
       .join(','),
   );
-  const body = '﻿' + [header.join(','), ...lines].join('\r\n');
+
+  // 会计要的是「这段时间一共多少钱」，让他自己在 Excel 里拉一遍 sum 不合适
+  const total = round3(results.reduce((sum, r) => sum + (r.amount ?? 0), 0));
+  const totalRow = ['合计', '', '', '', '', '', total, '', ''].map(csvCell).join(',');
+
+  const body = '﻿' + [header.join(','), ...lines, totalRow].join('\r\n');
   return new Response(body, {
     headers: {
       'content-type': 'text/csv; charset=utf-8',
