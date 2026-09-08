@@ -2,6 +2,8 @@ import { reorderPointOf, type ItemUsage } from './usage';
 
 export interface Env {
   DB: D1Database;
+  /** 对货单拍照识别用的 Workers AI 绑定 */
+  AI: Ai;
   /** 注册邀请码，用 `wrangler secret put INVITE_CODE` 设置，不进代码库。没配置则注册关闭。 */
   INVITE_CODE?: string;
 }

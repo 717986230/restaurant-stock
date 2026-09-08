@@ -120,6 +120,71 @@ export interface PurchaseOrderDetail extends PurchaseOrder {
   lines: PurchaseOrderLine[];
 }
 
+export interface ReceivingSlip {
+  id: number;
+  slipDay: string;
+  supplierName: string | null;
+  totalAmount: number | null;
+  note: string | null;
+  settled: boolean;
+  settledAt: string | null;
+  createdAt: string;
+  lineCount: number;
+  imageCount: number;
+}
+
+export interface ReceivingSlipLine {
+  id: number;
+  itemName: string;
+  qty: number | null;
+  unit: string | null;
+  unitPrice: number | null;
+  amount: number | null;
+  note: string | null;
+}
+
+export type ReceivingImageKind = 'SLIP' | 'GOODS';
+
+export interface ReceivingSlipImage {
+  id: number;
+  kind: ReceivingImageKind;
+  url: string;
+}
+
+export interface ReceivingSlipDetail extends ReceivingSlip {
+  lines: ReceivingSlipLine[];
+  images: ReceivingSlipImage[];
+}
+
+export interface RecognizeDraftLine {
+  itemName: string;
+  qty: number | null;
+  unit: string | null;
+  unitPrice: number | null;
+  amount: number | null;
+}
+
+export interface RecognizeResult {
+  supplierName: string | null;
+  day: string | null;
+  lines: RecognizeDraftLine[];
+}
+
+export interface SettlementStatus {
+  lastSettledDay: string | null;
+  pendingCount: number;
+  pendingTotal: number;
+}
+
+export interface Settlement {
+  id: number;
+  fromDay: string | null;
+  toDay: string;
+  slipCount: number;
+  totalAmount: number;
+  createdAt: string;
+}
+
 /** null 表示没登录，App 会盖上登录页；任何一个接口 401 都会把它清掉 */
 export const currentUser = ref<User | null>(null);
 
@@ -317,6 +382,70 @@ export const api = {
         body: JSON.stringify({ lines, requestId, day: today() }),
       },
     );
+  },
+  receivingSlips(settled?: 0 | 1) {
+    const qs = settled === undefined ? '' : `?settled=${settled}`;
+    return request<ReceivingSlip[]>(`/receiving/slips${qs}`);
+  },
+  receivingSlip(id: number) {
+    return request<ReceivingSlipDetail>(`/receiving/slips/${id}`);
+  },
+  createReceivingSlip(body: { day?: string; supplierName?: string | null; note?: string | null } = {}) {
+    return request<{ id: number }>('/receiving/slips', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  },
+  updateReceivingSlip(
+    id: number,
+    body: {
+      day?: string;
+      supplierName?: string | null;
+      note?: string | null;
+      lines?: { itemName: string; qty: number | null; unit: string | null; unitPrice: number | null; amount?: number | null; note?: string | null }[];
+    },
+  ) {
+    return request<{ ok: true }>(`/receiving/slips/${id}`, {
+      method: 'PUT',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+  },
+  deleteReceivingSlip(id: number) {
+    return request<{ ok: true }>(`/receiving/slips/${id}`, { method: 'DELETE' });
+  },
+  async uploadReceivingImage(id: number, kind: ReceivingImageKind, file: Blob) {
+    const form = new FormData();
+    form.append('file', file, 'photo.jpg');
+    form.append('kind', kind);
+    return request<{ id: number; kind: ReceivingImageKind; url: string }>(`/receiving/slips/${id}/images`, {
+      method: 'POST',
+      body: form,
+    });
+  },
+  deleteReceivingImage(slipId: number, imageId: number) {
+    return request<{ ok: true }>(`/receiving/slips/${slipId}/images/${imageId}`, { method: 'DELETE' });
+  },
+  recognizeReceivingSlip(slipId: number, imageId: number) {
+    return request<RecognizeResult>(`/receiving/slips/${slipId}/recognize`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ imageId }),
+    });
+  },
+  settlementStatus() {
+    return request<SettlementStatus>('/receiving/settlement/status');
+  },
+  settlements() {
+    return request<Settlement[]>('/receiving/settlements');
+  },
+  createSettlement(toDay: string) {
+    return request<Settlement>('/receiving/settlements', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ toDay }),
+    });
   },
 };
 

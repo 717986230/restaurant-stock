@@ -3,6 +3,7 @@ import { registerAuthRoutes, requireAuth } from './auth';
 import { items } from './items';
 import { moves } from './moves';
 import { purchases } from './purchases';
+import { receiving } from './receiving';
 import { suppliers } from './suppliers';
 import { ApiError, normalizeDay, round3, statusOf, toItemDto, type AppEnv, type ItemRow } from './types';
 import { loadUsage, reorderPointOf } from './usage';
@@ -20,6 +21,7 @@ app.route('/api/items', items);
 app.route('/api/moves', moves);
 app.route('/api/suppliers', suppliers);
 app.route('/api/purchases', purchases);
+app.route('/api/receiving', receiving);
 
 /** 首页顶部那几个数字：一眼看出今天有没有事要处理 */
 app.get('/api/summary', async (c) => {

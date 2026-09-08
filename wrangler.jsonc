@@ -21,6 +21,11 @@
     }
   ],
 
+  // 对货单拍照识别用：Workers AI 免费额度够门店级别的用量，不用另外开账号
+  "ai": {
+    "binding": "AI"
+  },
+
   "observability": {
     "enabled": true
   }
