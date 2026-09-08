@@ -29,6 +29,49 @@ interface DraftLine {
   amount: number | null;
 }
 
+/** 一段返回内容可能是纯字符串，也可能是 [{type:'text',text:'…'}] 这样的块数组 */
+function pickText(value: unknown): string | null {
+  if (typeof value === 'string') return value.trim() ? value : null;
+  if (Array.isArray(value)) {
+    const joined = value
+      .map((part) => {
+        if (typeof part === 'string') return part;
+        if (part && typeof part === 'object' && 'text' in part) {
+          const t = (part as { text?: unknown }).text;
+          return typeof t === 'string' ? t : '';
+        }
+        return '';
+      })
+      .join('');
+    return joined.trim() ? joined : null;
+  }
+  if (value && typeof value === 'object' && 'text' in value) {
+    const t = (value as { text?: unknown }).text;
+    return typeof t === 'string' && t.trim() ? t : null;
+  }
+  return null;
+}
+
+/**
+ * 各家模型的返回壳子不一样：文档上写 response 是字符串，实际可能是内容块数组，
+ * 换成 OpenAI 兼容端点又变成 choices[0].message.content。挨个试，
+ * 一个都对不上就把真实结构报出来——别再让"识别不可用"这一句把原因吞掉。
+ */
+function textOf(result: unknown): string {
+  const r = (result ?? {}) as Record<string, unknown>;
+  const choices = r.choices;
+  const firstChoice =
+    Array.isArray(choices) && choices[0] && typeof choices[0] === 'object'
+      ? (choices[0] as { message?: { content?: unknown } }).message?.content
+      : undefined;
+
+  for (const candidate of [r.response, firstChoice, r.output_text]) {
+    const text = pickText(candidate);
+    if (text) return text;
+  }
+  throw new Error(`看不懂模型返回结构: ${JSON.stringify(result).slice(0, 200)}`);
+}
+
 /** AI 有时候会在 JSON 前后加几句话或代码块标记，这里只取第一个花括号包住的部分 */
 function extractJson(text: string): unknown {
   const start = text.indexOf('{');
@@ -365,8 +408,7 @@ receiving.post('/slips/:id/recognize', async (c) => {
         ],
         max_tokens: 2048,
       });
-      const text = (result as { response?: string }).response ?? '';
-      const parsed = extractJson(text) as Record<string, unknown>;
+      const parsed = extractJson(textOf(result)) as Record<string, unknown>;
       if (!supplierName) supplierName = asTextOrNull(parsed.supplierName);
       if (!day) day = optionalDay(parsed.day);
       lines.push(...toDraftLines(parsed.lines));
