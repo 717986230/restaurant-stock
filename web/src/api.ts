@@ -124,6 +124,13 @@ export interface ReceivingSlip {
   id: number;
   slipDay: string;
   supplierName: string | null;
+  invoiceNo: string | null;
+  /** 不含税净额（欧洲发票明细列就是这个口径） */
+  netAmount: number | null;
+  taxAmount: number | null;
+  /** 含税总计，实际要付给供应商的钱 */
+  grossAmount: number | null;
+  /** 进结账的金额：有含税总计就用它，没有才退回明细之和 */
   totalAmount: number | null;
   note: string | null;
   settled: boolean;
@@ -166,7 +173,11 @@ export interface RecognizeDraftLine {
 
 export interface RecognizeResult {
   supplierName: string | null;
+  invoiceNo: string | null;
   day: string | null;
+  netAmount: number | null;
+  taxAmount: number | null;
+  grossAmount: number | null;
   lines: RecognizeDraftLine[];
   recognizedCount: number;
   failedCount: number;
@@ -404,6 +415,10 @@ export const api = {
     body: {
       day?: string;
       supplierName?: string | null;
+      invoiceNo?: string | null;
+      netAmount?: number | null;
+      taxAmount?: number | null;
+      grossAmount?: number | null;
       note?: string | null;
       lines?: { itemName: string; qty: number | null; unit: string | null; unitPrice: number | null; amount?: number | null; note?: string | null }[];
     },

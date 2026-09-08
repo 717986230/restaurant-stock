@@ -19,7 +19,20 @@ const uploading = ref<ReceivingImageKind | null>(null);
 
 const day = ref('');
 const supplierName = ref('');
+const invoiceNo = ref('');
 const note = ref('');
+// 单据上印的三个数，一律照抄不反算：各档税额分别四舍五入，
+// 净额+税额未必正好等于总计（差一两分是常态），而付款要照单据付。
+const netAmount = ref('');
+const taxAmount = ref('');
+const grossAmount = ref('');
+
+function numOrNull(v: string): number | null {
+  const s = v.trim();
+  if (!s) return null;
+  const n = Number(s);
+  return Number.isFinite(n) ? n : null;
+}
 
 interface RowDraft {
   itemName: string;
@@ -53,9 +66,33 @@ function amountOf(r: RowDraft): number | null {
   return null;
 }
 
+/** 进结账的金额：单据印了含税总计就用它，没印才退回明细之和 */
+const payable = computed(() => numOrNull(grossAmount.value) ?? total.value);
+
+/**
+ * 明细之和该等于单据上的净额。对不上通常是 AI 少认了一行、或者数字认错，
+ * 这种错等到结账那天再翻就来不及了，所以保存前就要说。
+ * 一分钱以内不算——单据自己也有四舍五入的零头。
+ */
+const netMismatch = computed(() => {
+  const stated = numOrNull(netAmount.value);
+  if (stated === null || !rows.value.length) return null;
+  const diff = round3(total.value - stated);
+  return Math.abs(diff) > 0.011 ? { stated, summed: total.value, diff } : null;
+});
+
 /** 表单当前内容的快照，跟上次保存时的比一比就知道有没有没存的改动 */
 function snapshot(): string {
-  return JSON.stringify({ day: day.value, supplierName: supplierName.value.trim(), note: note.value.trim(), rows: rows.value });
+  return JSON.stringify({
+    day: day.value,
+    supplierName: supplierName.value.trim(),
+    invoiceNo: invoiceNo.value.trim(),
+    netAmount: netAmount.value.trim(),
+    taxAmount: taxAmount.value.trim(),
+    grossAmount: grossAmount.value.trim(),
+    note: note.value.trim(),
+    rows: rows.value,
+  });
 }
 const savedSnapshot = ref('');
 const dirty = computed(() => !readOnly.value && snapshot() !== savedSnapshot.value);
@@ -68,6 +105,10 @@ async function load() {
     slip.value = data;
     day.value = data.slipDay;
     supplierName.value = data.supplierName ?? '';
+    invoiceNo.value = data.invoiceNo ?? '';
+    netAmount.value = data.netAmount == null ? '' : String(data.netAmount);
+    taxAmount.value = data.taxAmount == null ? '' : String(data.taxAmount);
+    grossAmount.value = data.grossAmount == null ? '' : String(data.grossAmount);
     note.value = data.note ?? '';
     rows.value = data.lines.map((l) => ({
       itemName: l.itemName,
@@ -144,7 +185,11 @@ async function recognize() {
   try {
     const res = await api.recognizeReceivingSlip(id, slipImages.value.map((im) => im.id));
     if (res.supplierName && !supplierName.value.trim()) supplierName.value = res.supplierName;
+    if (res.invoiceNo && !invoiceNo.value.trim()) invoiceNo.value = res.invoiceNo;
     if (res.day) day.value = res.day;
+    if (res.netAmount != null) netAmount.value = String(res.netAmount);
+    if (res.taxAmount != null) taxAmount.value = String(res.taxAmount);
+    if (res.grossAmount != null) grossAmount.value = String(res.grossAmount);
     if (res.lines.length) {
       rows.value = res.lines.map((l) => ({
         itemName: l.itemName,
@@ -182,13 +227,22 @@ async function save() {
     }));
 
   // 保存是整张替换明细：误删了行、或者 AI 识别把手改过的内容覆盖了，存下去就定了。
-  // 所以这里顺便把要进结账单的那个金额摆出来，让人在写进账之前最后核一眼。
+  // 所以这里把「实际要付多少」摆出来，让人在写进账之前最后核一眼。
+  const parts = [
+    lines.length ? `共 ${lines.length} 项货品` : '还没填货品明细',
+    `实付 ${money(payable.value)}`,
+  ];
+  if (netMismatch.value) {
+    parts.push(
+      `⚠️ 明细加起来是 ${money(netMismatch.value.summed)}，但单据上的净额是 ${money(netMismatch.value.stated)}，` +
+        `差 ${money(Math.abs(netMismatch.value.diff))}。多半是有一行没认出来或数字认错了，建议先核对。`,
+    );
+  }
   if (!await askConfirm({
-    title: lines.length ? '保存这张对货单？' : '保存一张没有明细的单？',
-    message: lines.length
-      ? `共 ${lines.length} 项货品，合计 ${money(total.value)}。这个金额会进结账单，确认前请核对一遍。`
-      : '还没填任何货品，保存后这张单在结账导出里会显示成「还没填货品明细」。',
-    confirmText: '确认保存',
+    title: '保存这张对货单？',
+    message: `${parts.join('，')}。实付金额会进结账单。`,
+    confirmText: netMismatch.value ? '仍然保存' : '确认保存',
+    tone: netMismatch.value ? 'danger' : undefined,
   })) return;
 
   saving.value = true;
@@ -196,6 +250,10 @@ async function save() {
     await api.updateReceivingSlip(id, {
       day: day.value,
       supplierName: supplierName.value.trim() || null,
+      invoiceNo: invoiceNo.value.trim() || null,
+      netAmount: numOrNull(netAmount.value),
+      taxAmount: numOrNull(taxAmount.value),
+      grossAmount: numOrNull(grossAmount.value),
       note: note.value.trim() || null,
       lines,
     });
@@ -247,6 +305,11 @@ async function remove() {
     <label class="field">
       <span>供应商（可不填）</span>
       <input v-model="supplierName" class="input" placeholder="拍照识别会自动填，也可以手动改" :disabled="readOnly" />
+    </label>
+
+    <label class="field">
+      <span>单据编号</span>
+      <input v-model="invoiceNo" class="input" placeholder="识别会自动填，同一编号只能录一次" :disabled="readOnly" />
     </label>
 
     <div class="field">
@@ -312,7 +375,31 @@ async function remove() {
         </li>
       </ul>
 
-      <p v-if="rows.length" class="total">合计 <strong>{{ fmt(total) }}</strong></p>
+      <p v-if="rows.length" class="total">明细加起来 <strong>{{ fmt(total) }}</strong></p>
+    </div>
+
+    <div class="field">
+      <span>单据金额（照单据上印的填，不用自己算）</span>
+      <div class="amounts">
+        <label class="amount-row">
+          <span class="amount-label">净额<em>不含税</em></span>
+          <input v-model="netAmount" class="input num" type="number" inputmode="decimal" step="0.01" placeholder="Netto" :disabled="readOnly" />
+        </label>
+        <label class="amount-row">
+          <span class="amount-label">税额<em>MwSt</em></span>
+          <input v-model="taxAmount" class="input num" type="number" inputmode="decimal" step="0.01" placeholder="Summe MwSt" :disabled="readOnly" />
+        </label>
+        <label class="amount-row pay">
+          <span class="amount-label">实付<em>就是这个数</em></span>
+          <input v-model="grossAmount" class="input num" type="number" inputmode="decimal" step="0.01" placeholder="Gesamtbetrag" :disabled="readOnly" />
+        </label>
+      </div>
+
+      <p v-if="netMismatch" class="warn">
+        ⚠️ 明细加起来 {{ fmt(netMismatch.summed) }}，单据净额 {{ fmt(netMismatch.stated) }}，差 {{ fmt(Math.abs(netMismatch.diff)) }}。
+        多半是有一行没认出来或数字认错了。
+      </p>
+      <p class="muted small pay-hint">结账按「实付」汇总{{ grossAmount.trim() ? '' : '；没填实付就按明细之和算' }}。</p>
     </div>
 
     <label class="field">
@@ -421,6 +508,59 @@ textarea.input {
 
 .ocr-all {
   margin-top: 10px;
+}
+
+.amounts {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.amount-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.amount-label {
+  flex: none;
+  width: 92px;
+  font-size: 14px;
+  display: flex;
+  flex-direction: column;
+}
+
+.amount-label em {
+  font-style: normal;
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.amount-row .input {
+  flex: 1;
+  text-align: right;
+}
+
+/* 实付这一行要一眼看出来跟上面两个不是一个性质：这是真正要掏的钱 */
+.amount-row.pay .amount-label {
+  font-weight: 700;
+  color: var(--brand);
+}
+
+.amount-row.pay .input {
+  border-color: var(--brand);
+  font-weight: 700;
+}
+
+.warn {
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.6;
+  color: var(--brand);
+}
+
+.pay-hint {
+  margin: 8px 0 0;
 }
 
 .table-head {

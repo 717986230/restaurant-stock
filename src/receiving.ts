@@ -13,11 +13,25 @@ const RECOGNIZE_PROMPT = `你在识别一张中文餐馆供应商送货时留下
 严格按这个格式输出：
 {
   "supplierName": "供应商名称，看不出来就填 null",
+  "invoiceNo": "单据编号，看不出来就填 null",
   "day": "单据上的日期，格式 YYYY-MM-DD，看不出来就填 null",
+  "netAmount": 不含税净额数字或null,
+  "taxAmount": 税额合计数字或null,
+  "grossAmount": 含税总计数字或null,
   "lines": [
     { "itemName": "货品名称", "qty": 数字或null, "unit": "单位比如箱/瓶/包，看不出来就填 null", "unitPrice": 单价数字或null, "amount": 这一行金额数字或null }
   ]
 }
+
+单据编号找这些字样后面的那串号：Rechnung / Rechnungs-Nr / Beleg-Nr / Invoice / 发票号 / 单号。
+注意别跟客户号（Kunden-Nr）、货号（Art.-Nr）搞混，那些不是单据编号。
+
+三个金额对应单据底部的汇总栏，德语单据通常是这三行：
+  Netto / Nettobetrag        → netAmount   不含税净额
+  MwSt / Summe MwSt / USt    → taxAmount   税额合计
+  Gesamtbetrag / Brutto      → grossAmount 含税总计，也就是实际要付的钱
+只有一个总额、看不出税额的单据，就把那个数填进 grossAmount，另外两个填 null。
+金额一律填数字，别带货币符号和千位分隔符（1.234,56 这种要写成 1234.56）。
 
 数字字段认不清就填 null，不要瞎编数字。lines 按单据从上到下的顺序排列，看不清的字也要尽量按最像的字填，不要跳过整行。`;
 
@@ -127,6 +141,10 @@ interface SlipRow {
   id: number;
   slip_day: string;
   supplier_name: string | null;
+  invoice_no: string | null;
+  net_amount: number | null;
+  tax_amount: number | null;
+  gross_amount: number | null;
   total_amount: number | null;
   note: string | null;
   settled_at: string | null;
@@ -140,6 +158,11 @@ function toSlipDto(r: SlipRow) {
     id: r.id,
     slipDay: r.slip_day,
     supplierName: r.supplier_name,
+    invoiceNo: r.invoice_no,
+    netAmount: r.net_amount == null ? null : round3(r.net_amount),
+    taxAmount: r.tax_amount == null ? null : round3(r.tax_amount),
+    grossAmount: r.gross_amount == null ? null : round3(r.gross_amount),
+    /** 进结账的就是这个数：单据上印了含税总额就用它，没印才退回明细之和 */
     totalAmount: r.total_amount == null ? null : round3(r.total_amount),
     note: r.note,
     settled: r.settled_at !== null,
@@ -151,7 +174,9 @@ function toSlipDto(r: SlipRow) {
 }
 
 const SLIP_SELECT = `
-  select s.id, s.slip_day, s.supplier_name, s.total_amount, s.note, s.settled_at, s.created_at,
+  select s.id, s.slip_day, s.supplier_name, s.invoice_no,
+         s.net_amount, s.tax_amount, s.gross_amount, s.total_amount,
+         s.note, s.settled_at, s.created_at,
          (select count(*) from receiving_slip_lines l where l.slip_id = s.id) as line_count,
          (select count(*) from receiving_slip_images im where im.slip_id = s.id) as image_count
   from receiving_slips s
@@ -232,6 +257,42 @@ async function requireOpenSlip(db: D1Database, userId: number, id: number): Prom
   if (slip.settled_at !== null) throw new ApiError(400, '这张对货单已经结账，不能再修改');
 }
 
+/**
+ * 同一张发票录两遍，会计那边就多付一笔。编号是单据自带的唯一标识，
+ * 拿它拦最省事。
+ *
+ * 按供应商分组比对而不是全账号比对：小供应商的手写单编号常常就是
+ * 「001」「002」，跨供应商撞号是正常现象，全局查重会把好单也拦下来。
+ * 供应商没填时退回全账号比对——宁可多问一句，也好过把重复的单放进去。
+ */
+async function assertInvoiceNoUnused(
+  db: D1Database,
+  userId: number,
+  slipId: number,
+  invoiceNo: string,
+  supplierName: string | null,
+): Promise<void> {
+  const sql = supplierName
+    ? `select id, slip_day, supplier_name from receiving_slips
+       where user_id = ? and invoice_no = ? and id <> ? and supplier_name = ? limit 1`
+    : `select id, slip_day, supplier_name from receiving_slips
+       where user_id = ? and invoice_no = ? and id <> ? limit 1`;
+  const binds = supplierName ? [userId, invoiceNo, slipId, supplierName] : [userId, invoiceNo, slipId];
+  const clash = await db.prepare(sql).bind(...binds).first<{ id: number; slip_day: string; supplier_name: string | null }>();
+  if (clash) {
+    throw new ApiError(
+      409,
+      `单据编号「${invoiceNo}」已经录过了：${clash.slip_day}${clash.supplier_name ? ` · ${clash.supplier_name}` : ''}（第 ${clash.id} 号对货单）。同一张单不要录两遍。`,
+    );
+  }
+}
+
+/** 金额可以留空（手写单常常只有个总数），但填了就必须是合法的非负数 */
+function optionalAmount(value: unknown, field: string): number | null {
+  if (value === undefined || value === null || value === '') return null;
+  return requireNumber(value, field, { min: 0 });
+}
+
 const MAX_LINES = 200;
 
 /** 保存表格：整单的明细一次性替换，跟盘点/收货一个思路——半页表格没意义 */
@@ -243,6 +304,23 @@ receiving.put('/slips/:id', async (c) => {
   const day = body.day === undefined ? null : normalizeDay(body.day);
   const supplierNameProvided = Object.prototype.hasOwnProperty.call(body, 'supplierName');
   const noteProvided = Object.prototype.hasOwnProperty.call(body, 'note');
+  const invoiceNoProvided = Object.prototype.hasOwnProperty.call(body, 'invoiceNo');
+  const invoiceNo = invoiceNoProvided ? optionalText(body.invoiceNo, 60) : null;
+
+  const netAmount = optionalAmount(body.netAmount, '净额');
+  const taxAmount = optionalAmount(body.taxAmount, '税额');
+  const grossAmount = optionalAmount(body.grossAmount, '实付总额');
+
+  if (invoiceNo) {
+    // 供应商用这次要存的值来判，不是库里的旧值——同一次提交里改了供应商又填了
+    // 编号时，得按改完之后的组合去查重
+    const supplierForCheck = supplierNameProvided
+      ? optionalText(body.supplierName, 60)
+      : (await c.env.DB.prepare('select supplier_name from receiving_slips where id = ? and user_id = ?')
+          .bind(id, c.var.userId)
+          .first<{ supplier_name: string | null }>())?.supplier_name ?? null;
+    await assertInvoiceNoUnused(c.env.DB, c.var.userId, id, invoiceNo, supplierForCheck);
+  }
 
   const rawLines = body.lines;
   let lines: { itemName: string; qty: number | null; unit: string | null; unitPrice: number | null; amount: number | null; note: string | null }[] | null = null;
@@ -277,10 +355,19 @@ receiving.put('/slips/:id', async (c) => {
     sets.push('note = ?');
     setBinds.push(optionalText(body.note, 255));
   }
-  if (lines !== null) {
-    const total = round3(lines.reduce((sum, l) => sum + (l.amount ?? 0), 0));
+  if (invoiceNoProvided) {
+    sets.push('invoice_no = ?');
+    setBinds.push(invoiceNo);
+  }
+  sets.push('net_amount = ?', 'tax_amount = ?', 'gross_amount = ?');
+  setBinds.push(netAmount, taxAmount, grossAmount);
+
+  // 进结账的金额：单据上印了含税总额就照它付，没印才退回明细之和。
+  // 明细那一列在欧洲发票上是净额，直接拿来当总额会漏掉整个税额。
+  const lineTotal = lines === null ? null : lines.length ? round3(lines.reduce((sum, l) => sum + (l.amount ?? 0), 0)) : null;
+  if (grossAmount !== null || lines !== null) {
     sets.push('total_amount = ?');
-    setBinds.push(lines.length ? total : null);
+    setBinds.push(grossAmount ?? lineTotal);
   }
   statements.push(
     c.env.DB.prepare(`update receiving_slips set ${sets.join(', ')} where id = ? and user_id = ?`).bind(...setBinds, id, c.var.userId),
@@ -388,7 +475,11 @@ receiving.post('/slips/:id/recognize', async (c) => {
   const byId = new Map(rows.map((r) => [r.id, r]));
 
   let supplierName: string | null = null;
+  let invoiceNo: string | null = null;
   let day: string | null = null;
+  let netAmount: number | null = null;
+  let taxAmount: number | null = null;
+  let grossAmount: number | null = null;
   const lines: DraftLine[] = [];
   let failedCount = 0;
   let lastError = '';
@@ -409,8 +500,13 @@ receiving.post('/slips/:id/recognize', async (c) => {
         max_tokens: 2048,
       });
       const parsed = extractJson(textOf(result)) as Record<string, unknown>;
+      // 单据分几张拍时，编号和汇总栏只会出现在其中一张上，所以取第一个认出来的
       if (!supplierName) supplierName = asTextOrNull(parsed.supplierName);
+      if (!invoiceNo) invoiceNo = asTextOrNull(parsed.invoiceNo);
       if (!day) day = optionalDay(parsed.day);
+      if (netAmount === null) netAmount = asNumberOrNull(parsed.netAmount);
+      if (taxAmount === null) taxAmount = asNumberOrNull(parsed.taxAmount);
+      if (grossAmount === null) grossAmount = asNumberOrNull(parsed.grossAmount);
       lines.push(...toDraftLines(parsed.lines));
     } catch (err) {
       failedCount++;
@@ -423,7 +519,17 @@ receiving.post('/slips/:id/recognize', async (c) => {
   if (failedCount === imageIds.length) {
     throw new ApiError(502, `AI 识别暂时不可用（${lastError.slice(0, 120)}），请重试一次或手动填写`);
   }
-  return c.json({ supplierName, day, lines, recognizedCount: imageIds.length - failedCount, failedCount });
+  return c.json({
+    supplierName,
+    invoiceNo,
+    day,
+    netAmount,
+    taxAmount,
+    grossAmount,
+    lines,
+    recognizedCount: imageIds.length - failedCount,
+    failedCount,
+  });
 });
 
 receiving.get('/settlement/status', async (c) => {
@@ -509,16 +615,23 @@ receiving.get('/settlements/:id/export.csv', async (c) => {
   // 左连接：明细还没填的对货单也要出现在账单里。之前用内连接，
   // 一张只拍了照片没填表格的单子会整张从导出里消失，账面上凭空少一笔。
   const { results } = await c.env.DB.prepare(
-    `select s.slip_day, s.supplier_name, s.note as slip_note,
+    `select s.id as slip_id, s.slip_day, s.supplier_name, s.invoice_no, s.note as slip_note,
+            s.net_amount, s.tax_amount, s.gross_amount, s.total_amount,
             l.item_name, l.qty, l.unit, l.unit_price, l.amount, l.note as line_note
      from receiving_slips s
      left join receiving_slip_lines l on l.slip_id = s.id and l.user_id = s.user_id
      where s.settlement_id = ? and s.user_id = ?
      order by s.slip_day, s.id, l.line_no`,
   ).bind(id, c.var.userId).all<{
+    slip_id: number;
     slip_day: string;
     supplier_name: string | null;
+    invoice_no: string | null;
     slip_note: string | null;
+    net_amount: number | null;
+    tax_amount: number | null;
+    gross_amount: number | null;
+    total_amount: number | null;
     item_name: string | null;
     qty: number | null;
     unit: string | null;
@@ -527,26 +640,52 @@ receiving.get('/settlements/:id/export.csv', async (c) => {
     line_note: string | null;
   }>();
 
-  const header = ['日期', '供应商', '货品', '数量', '单位', '单价', '金额', '单据备注', '明细备注'];
-  const lines = results.map((r) =>
-    [
+  // 明细行的金额在欧洲发票上是净额，跟「实付」不是一回事，所以两组数分开列：
+  // 前面几列是这一行买了什么，后面三列是这张单整体要付多少（只在每张单的第一行写，
+  // 不然一张单有 8 行明细就会把同一个总额重复 8 次，一拉 sum 就翻倍）。
+  const header = [
+    '日期', '供应商', '单据编号', '货品', '数量', '单位', '单价', '行金额（净）',
+    '本单净额', '本单税额', '本单实付', '单据备注', '明细备注',
+  ];
+
+  const seenSlip = new Set<number>();
+  const lines = results.map((r) => {
+    const firstRowOfSlip = !seenSlip.has(r.slip_id);
+    seenSlip.add(r.slip_id);
+    return [
       r.slip_day,
       r.supplier_name ?? '',
+      r.invoice_no ?? '',
       r.item_name ?? '（这张单还没填货品明细）',
       r.qty ?? '',
       r.unit ?? '',
       r.unit_price ?? '',
       r.amount ?? '',
+      firstRowOfSlip ? r.net_amount ?? '' : '',
+      firstRowOfSlip ? r.tax_amount ?? '' : '',
+      firstRowOfSlip ? r.total_amount ?? '' : '',
       r.slip_note ?? '',
       r.line_note ?? '',
     ]
       .map(csvCell)
-      .join(','),
-  );
+      .join(',');
+  });
 
-  // 会计要的是「这段时间一共多少钱」，让他自己在 Excel 里拉一遍 sum 不合适
-  const total = round3(results.reduce((sum, r) => sum + (r.amount ?? 0), 0));
-  const totalRow = ['合计', '', '', '', '', '', total, '', ''].map(csvCell).join(',');
+  // 会计要的是「这段时间一共付多少」，让他自己在 Excel 里拉 sum 容易拉错列。
+  // 每张单只算一次，所以按 slip_id 去重后再加。
+  const perSlip = new Map<number, { net: number | null; tax: number | null; paid: number | null }>();
+  for (const r of results) {
+    if (!perSlip.has(r.slip_id)) perSlip.set(r.slip_id, { net: r.net_amount, tax: r.tax_amount, paid: r.total_amount });
+  }
+  const sumOf = (pick: (v: { net: number | null; tax: number | null; paid: number | null }) => number | null) =>
+    round3([...perSlip.values()].reduce((sum, v) => sum + (pick(v) ?? 0), 0));
+
+  const totalRow = [
+    '合计', '', '', `${perSlip.size} 张单`, '', '', '', '',
+    sumOf((v) => v.net), sumOf((v) => v.tax), sumOf((v) => v.paid), '', '',
+  ]
+    .map(csvCell)
+    .join(',');
 
   const body = '﻿' + [header.join(','), ...lines, totalRow].join('\r\n');
   return new Response(body, {
