@@ -84,7 +84,7 @@ async function settle() {
 
     <label class="field">
       <span>结到哪一天（含当天）</span>
-      <input v-model="toDay" class="input" type="date" />
+      <input v-model="toDay" class="input" type="date" :max="today()" />
     </label>
 
     <button class="btn btn-primary btn-block" :disabled="settling || !status?.pendingCount" @click="settle">

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, ref } from 'vue';
 import { onBeforeRouteLeave, useRoute, useRouter } from 'vue-router';
-import { api, fmt, money, round3, type ReceivingImageKind, type ReceivingSlipDetail } from '@/api';
+import { api, fmt, money, round3, today, type ReceivingImageKind, type ReceivingSlipDetail } from '@/api';
 import { shrinkImage } from '@/image';
 import { toast, toastError } from '@/toast';
 import { askConfirm } from '@/confirm';
@@ -241,7 +241,7 @@ async function remove() {
 
     <label class="field">
       <span>日期</span>
-      <input v-model="day" class="input" type="date" :disabled="readOnly" />
+      <input v-model="day" class="input" type="date" :max="today()" :disabled="readOnly" />
     </label>
 
     <label class="field">

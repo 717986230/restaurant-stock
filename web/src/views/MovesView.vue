@@ -77,7 +77,7 @@ function timeOf(iso: string): string {
     <h1>📒 出入库流水</h1>
     <div class="daybar">
       <button class="nav" @click="shiftDay(-1)" aria-label="前一天">‹</button>
-      <input v-model="day" class="input date" type="date" />
+      <input v-model="day" class="input date" type="date" :max="today()" />
       <button class="nav" :disabled="day >= today()" @click="shiftDay(1)" aria-label="后一天">›</button>
     </div>
     <div class="stats muted small">

@@ -141,9 +141,29 @@ export function optionalText(value: unknown, maxLen: number): string | null {
   return s.slice(0, maxLen);
 }
 
-/** 门店本地日期由前端给，服务端只做格式校验，避免 UTC 把当日流水切到昨天 */
+/**
+ * 容差为什么是 +1 天：门店本地日期由前端给（避免 UTC 把当日流水切到昨天），
+ * UTC+ 时区的店在当地凌晨提交时，本地日期本来就可能比 UTC 日期大一天。
+ */
+function latestAllowedDay(): string {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() + 1);
+  return d.toISOString().slice(0, 10);
+}
+
+/**
+ * 门店本地日期由前端给，服务端只做格式校验，避免 UTC 把当日流水切到昨天。
+ *
+ * 进货、出库、盘点、对货单记的都是"已经发生的事"，日期不该落在未来。
+ * 手机上把年份点错一位太容易，而未来日期的对货单会被结账的
+ * `slip_day <= toDay` 永远筛掉——单子还在，账里却一直没有，谁也发现不了。
+ * 所以这里宁可报错，也不悄悄改成今天：改了用户还以为自己记的是那天。
+ */
 export function normalizeDay(value: unknown): string {
-  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) return value;
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)) {
+    if (value > latestAllowedDay()) throw new ApiError(400, `日期不能选未来的：${value}`);
+    return value;
+  }
   return new Date().toISOString().slice(0, 10);
 }
 
