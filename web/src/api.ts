@@ -168,6 +168,8 @@ export interface RecognizeResult {
   supplierName: string | null;
   day: string | null;
   lines: RecognizeDraftLine[];
+  recognizedCount: number;
+  failedCount: number;
 }
 
 export interface SettlementStatus {
@@ -427,11 +429,11 @@ export const api = {
   deleteReceivingImage(slipId: number, imageId: number) {
     return request<{ ok: true }>(`/receiving/slips/${slipId}/images/${imageId}`, { method: 'DELETE' });
   },
-  recognizeReceivingSlip(slipId: number, imageId: number) {
+  recognizeReceivingSlip(slipId: number, imageIds: number[]) {
     return request<RecognizeResult>(`/receiving/slips/${slipId}/recognize`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ imageId }),
+      body: JSON.stringify({ imageIds }),
     });
   },
   settlementStatus() {

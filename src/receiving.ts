@@ -309,39 +309,53 @@ receiving.delete('/slips/:id/images/:imageId', async (c) => {
 /**
  * AI 识别：只读操作，不落库。识别结果先回给前端在表格里核对/修改，
  * 用户确认后再走 PUT /slips/:id 保存——AI 认错字总会有，不能直接当账。
+ *
+ * 一张对货单可能拍了好几张照片（单据太长、分几页），这里一次性把传入的
+ * 所有照片都识别一遍再按顺序拼成一张表；某一张照片认失败不拖累其他几张，
+ * 只在返回里报个数，前端提示"有几张没认出来"。
  */
 receiving.post('/slips/:id/recognize', async (c) => {
   const id = Number(c.req.param('id'));
   const body = await c.req.json<Record<string, unknown>>().catch(() => ({}) as Record<string, unknown>);
-  const imageId = requireNumber(body.imageId, '照片', { min: 1 });
+  const rawIds = Array.isArray(body.imageIds) ? body.imageIds : body.imageId !== undefined ? [body.imageId] : [];
+  if (rawIds.length === 0) throw new ApiError(400, '请至少选一张照片');
+  if (rawIds.length > MAX_IMAGES_PER_SLIP) throw new ApiError(400, `一次最多识别 ${MAX_IMAGES_PER_SLIP} 张`);
+  const imageIds = rawIds.map((v) => requireNumber(v, '照片', { min: 1 }));
 
-  const row = await c.env.DB.prepare(
-    `select im.mime, im.bytes from receiving_slip_images im
+  const placeholders = imageIds.map(() => '?').join(',');
+  const { results: rows } = await c.env.DB.prepare(
+    `select im.id, im.bytes from receiving_slip_images im
      join receiving_slips s on s.id = im.slip_id
-     where im.id = ? and im.slip_id = ? and s.user_id = ? and im.kind = 'SLIP'`,
-  ).bind(imageId, id, c.var.userId).first<{ mime: string; bytes: ArrayBuffer | number[] }>();
-  if (!row) throw new ApiError(404, '照片不存在');
+     where im.slip_id = ? and s.user_id = ? and im.kind = 'SLIP' and im.id in (${placeholders})`,
+  ).bind(id, c.var.userId, ...imageIds).all<{ id: number; bytes: ArrayBuffer | number[] }>();
+  if (rows.length !== imageIds.length) throw new ApiError(404, '有照片不存在');
+  const byId = new Map(rows.map((r) => [r.id, r]));
 
-  const bytes = row.bytes instanceof ArrayBuffer ? new Uint8Array(row.bytes) : new Uint8Array(row.bytes as number[]);
-
-  let text: string;
-  try {
-    const result = await c.env.AI.run(VISION_MODEL, {
-      image: Array.from(bytes),
-      prompt: RECOGNIZE_PROMPT,
-      max_tokens: 2048,
-    });
-    text = (result as { response?: string }).response ?? '';
-  } catch {
-    throw new ApiError(502, 'AI 识别暂时不可用，请手动填写表格');
+  let supplierName: string | null = null;
+  let day: string | null = null;
+  const lines: DraftLine[] = [];
+  let failedCount = 0;
+  for (const imageId of imageIds) {
+    const row = byId.get(imageId)!;
+    const bytes = row.bytes instanceof ArrayBuffer ? new Uint8Array(row.bytes) : new Uint8Array(row.bytes as number[]);
+    try {
+      const result = await c.env.AI.run(VISION_MODEL, {
+        image: Array.from(bytes),
+        prompt: RECOGNIZE_PROMPT,
+        max_tokens: 2048,
+      });
+      const text = (result as { response?: string }).response ?? '';
+      const parsed = extractJson(text) as Record<string, unknown>;
+      if (!supplierName) supplierName = asTextOrNull(parsed.supplierName);
+      if (!day) day = optionalDay(parsed.day);
+      lines.push(...toDraftLines(parsed.lines));
+    } catch {
+      failedCount++;
+    }
   }
 
-  const parsed = extractJson(text) as Record<string, unknown>;
-  return c.json({
-    supplierName: asTextOrNull(parsed.supplierName),
-    day: optionalDay(parsed.day),
-    lines: toDraftLines(parsed.lines),
-  });
+  if (failedCount === imageIds.length) throw new ApiError(502, 'AI 识别暂时不可用，请重试一次或手动填写');
+  return c.json({ supplierName, day, lines, recognizedCount: imageIds.length - failedCount, failedCount });
 });
 
 receiving.get('/settlement/status', async (c) => {

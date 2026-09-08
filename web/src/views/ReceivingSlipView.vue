@@ -14,7 +14,7 @@ const slip = ref<ReceivingSlipDetail | null>(null);
 const loading = ref(true);
 const saving = ref(false);
 const deleting = ref(false);
-const recognizing = ref<number | null>(null);
+const recognizing = ref(false);
 const uploading = ref<ReceivingImageKind | null>(null);
 
 const day = ref('');
@@ -112,11 +112,15 @@ async function removePhoto(imageId: number) {
   }
 }
 
-/** AI 识别只是给一份草稿，不会自动保存——认错字总会有，识别完还要人核对一遍再点保存 */
-async function recognize(imageId: number) {
-  recognizing.value = imageId;
+/**
+ * AI 识别只是给一份草稿，不会自动保存——认错字总会有，识别完还要人核对一遍再点保存。
+ * 一次把当前所有"对货单照片"都传给后端，单据分好几页拍的也能拼成一张表。
+ */
+async function recognize() {
+  if (!slipImages.value.length) return;
+  recognizing.value = true;
   try {
-    const res = await api.recognizeReceivingSlip(id, imageId);
+    const res = await api.recognizeReceivingSlip(id, slipImages.value.map((im) => im.id));
     if (res.supplierName && !supplierName.value.trim()) supplierName.value = res.supplierName;
     if (res.day) day.value = res.day;
     if (res.lines.length) {
@@ -128,14 +132,18 @@ async function recognize(imageId: number) {
         amount: l.amount == null ? '' : String(l.amount),
         note: '',
       }));
-      toast(`识别到 ${res.lines.length} 项，核对无误后记得保存`);
+      toast(
+        res.failedCount
+          ? `识别到 ${res.lines.length} 项（有 ${res.failedCount} 张照片没认出来），核对无误后记得保存`
+          : `识别到 ${res.lines.length} 项，核对无误后记得保存`,
+      );
     } else {
       toast('没识别出货品行，麻烦手动填一下');
     }
   } catch (e) {
     toastError(e);
   } finally {
-    recognizing.value = null;
+    recognizing.value = false;
   }
 }
 
@@ -208,14 +216,11 @@ async function remove() {
     </label>
 
     <div class="field">
-      <span>对货单照片（AI 识别用这个）</span>
+      <span>对货单照片（AI 识别用这个，单据分几张拍的都行）</span>
       <div class="photo-grid">
         <a v-for="im in slipImages" :key="im.id" :href="im.url" target="_blank" class="photo">
           <img :src="im.url" alt="对货单照片" />
           <div v-if="!readOnly" class="photo-ops">
-            <button class="ocr" :disabled="recognizing === im.id" @click.prevent="recognize(im.id)">
-              {{ recognizing === im.id ? '识别中…' : '🔍 AI 识别' }}
-            </button>
             <button class="del" @click.prevent="removePhoto(im.id)">删除</button>
           </div>
         </a>
@@ -224,6 +229,14 @@ async function remove() {
         </button>
       </div>
       <input ref="slipFileInput" type="file" accept="image/*" hidden @change="uploadPhoto($event, 'SLIP')" />
+      <button
+        v-if="!readOnly && slipImages.length"
+        class="btn btn-block ocr-all"
+        :disabled="recognizing"
+        @click="recognize"
+      >
+        {{ recognizing ? '识别中…' : `🔍 AI 识别（${slipImages.length} 张）` }}
+      </button>
     </div>
 
     <div class="field">
@@ -370,6 +383,10 @@ textarea.input {
   align-items: center;
   justify-content: center;
   text-align: center;
+}
+
+.ocr-all {
+  margin-top: 10px;
 }
 
 .table-head {
