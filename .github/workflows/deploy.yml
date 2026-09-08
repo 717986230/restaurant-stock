@@ -1,0 +1,52 @@
+name: 部署到 Cloudflare
+
+on:
+  push:
+    branches: [main]
+  # 想手动重跑一次（比如上次因为漏配 secret 失败了）就用这个
+  workflow_dispatch:
+
+# 两次推送挨得近时排队执行，不要并发部署同一个 Worker
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      # 先把类型和构建跑一遍：编译不过就别去动线上的库和 Worker
+      - name: 类型检查
+        run: npm run typecheck
+
+      - name: 构建前端
+        run: npm run build:web
+
+      # 建表放在部署之前：migration 都是增量的（只加表和字段），
+      # 旧代码碰上新表不受影响；反过来先部署的话，
+      # 新页面会有几秒钟在查一张还没建出来的表。
+      - name: 应用 D1 migration
+        run: npm run db:init:remote
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+
+      # 这里直接调 wrangler 而不是 npm run deploy，
+      # 是因为前端产物上一步已经构建好了，不用再来一遍
+      - name: 部署 Worker
+        run: npx wrangler deploy
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}

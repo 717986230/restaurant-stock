@@ -97,10 +97,28 @@ npx wrangler d1 create restaurant-stock
 npm run db:init:remote && npm run deploy
 ```
 
-部署完会给一个 `https://restaurant-stock.<你的账号>.workers.dev` 网址。手机浏览器打开，
-iPhone 选「分享 → 添加到主屏幕」，安卓选「添加到主屏幕」，之后点图标就能直接进，跟 App 一样。
+部署完 wrangler 会把网址打印出来。地址取决于 [wrangler.jsonc](wrangler.jsonc) 里的 `name` 字段，
+当前叫 `kc`，所以是 `https://kc.<你的账号子域>.workers.dev`。忘了完整地址就跑
+`npx wrangler deployments list`，或者去 Cloudflare 控制台的 Workers & Pages 里找。
+手机浏览器打开后，iPhone 选「分享 → 添加到主屏幕」，安卓选「添加到主屏幕」，
+之后点图标就能直接进，跟 App 一样。
 
-以后改完代码，只要 `npm run deploy` 一条命令。
+### 自动部署
+
+推送到 `main` 会触发 [.github/workflows/deploy.yml](.github/workflows/deploy.yml)：
+类型检查 → 构建前端 → 应用 D1 migration → 部署 Worker。跑之前要在仓库
+Settings → Secrets and variables → Actions 里加两个 secret：
+
+| Secret | 从哪来 |
+|---|---|
+| `CLOUDFLARE_API_TOKEN` | Cloudflare 控制台 → My Profile → API Tokens，用「Edit Cloudflare Workers」模板，再补一条 `D1 : Edit` 权限（migration 要用） |
+| `CLOUDFLARE_ACCOUNT_ID` | Cloudflare 控制台任意 Workers 页面右侧，或 `npx wrangler whoami` |
+
+建表排在部署前面：migration 都是增量的，旧代码碰上新表没影响；反过来先部署，
+新页面会有几秒在查一张还没建出来的表。
+
+不想走 CI，本地 `npm run deploy` 一条命令也一样。注意这条命令只更新代码，
+**加了新 migration 的话要先 `npm run db:init:remote`**，否则线上会报表不存在。
 
 ## 账号与数据隔离
 
