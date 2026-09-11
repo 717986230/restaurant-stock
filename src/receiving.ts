@@ -383,7 +383,20 @@ receiving.put('/slips/:id', async (c) => {
       );
     });
   }
-  await c.env.DB.batch(statements);
+  try {
+    await c.env.DB.batch(statements);
+  } catch (err) {
+    // assertInvoiceNoUnused 上面已经查过一遍了，但那是隔一次往返的 SELECT，
+    // 跟这里的 UPDATE 不在同一个事务里：两个请求（手抖点两下、或者网络卡顿
+    // 后自动重试）能一起通过查重、一起写进来，靠应用层的检查拦不住这种真正
+    // 的竞态。数据库那条唯一索引才是最后一道闸——这里接住它的报错，
+    // 别把 SQLite 的原始报错甩给用户。
+    const msg = err instanceof Error ? err.message : String(err);
+    if (msg.includes('UNIQUE') && msg.includes('invoice')) {
+      throw new ApiError(409, `单据编号「${invoiceNo}」刚被同时保存过一次，请刷新页面确认后再试`);
+    }
+    throw err;
+  }
   return c.json({ ok: true });
 });
 
@@ -449,13 +462,43 @@ receiving.delete('/slips/:id/images/:imageId', async (c) => {
   return c.json({ ok: true });
 });
 
+/** 一张照片的识别结果；失败时 parsed 为 null，原因留在 error 里 */
+async function recognizeOne(
+  ai: Ai,
+  row: { id: number; mime: string; bytes: ArrayBuffer | number[] },
+): Promise<{ parsed: Record<string, unknown> | null; error: string | null }> {
+  const bytes = row.bytes instanceof ArrayBuffer ? new Uint8Array(row.bytes) : new Uint8Array(row.bytes as number[]);
+  try {
+    const result = await ai.run(VISION_MODEL, {
+      messages: [
+        {
+          role: 'user',
+          content: [
+            { type: 'text', text: RECOGNIZE_PROMPT },
+            { type: 'image_url', image_url: { url: toDataUrl(bytes, row.mime) } },
+          ],
+        },
+      ],
+      max_tokens: 2048,
+    });
+    return { parsed: extractJson(textOf(result)) as Record<string, unknown>, error: null };
+  } catch (err) {
+    return { parsed: null, error: err instanceof Error ? err.message : String(err) };
+  }
+}
+
 /**
  * AI 识别：只读操作，不落库。识别结果先回给前端在表格里核对/修改，
  * 用户确认后再走 PUT /slips/:id 保存——AI 认错字总会有，不能直接当账。
  *
- * 一张对货单可能拍了好几张照片（单据太长、分几页），这里一次性把传入的
- * 所有照片都识别一遍再按顺序拼成一张表；某一张照片认失败不拖累其他几张，
- * 只在返回里报个数，前端提示"有几张没认出来"。
+ * 一张对货单可能拍了好几张照片（单据太长、分几页）。识别本身互不依赖，
+ * 并发调用而不是一张等完再等下一张——AI 这一步的延迟是识别慢的大头，
+ * 4 张照片串行等于等 4 份延迟，并发只等最慢的那一份。
+ *
+ * 并发不改变"取第一张认出来的"这条既有规则：Promise.allSettled 按传入顺序
+ * 返回结果（跟谁先完成无关），拼表时仍然按 imageIds 的原始顺序遍历，
+ * 效果和之前的串行 for 循环完全一致，只是不用挨个等。
+ * 某一张照片认失败不拖累其他几张，只在返回里报个数，前端提示"有几张没认出来"。
  */
 receiving.post('/slips/:id/recognize', async (c) => {
   const id = Number(c.req.param('id'));
@@ -474,6 +517,8 @@ receiving.post('/slips/:id/recognize', async (c) => {
   if (rows.length !== imageIds.length) throw new ApiError(404, '有照片不存在');
   const byId = new Map(rows.map((r) => [r.id, r]));
 
+  const outcomes = await Promise.all(imageIds.map((imageId) => recognizeOne(c.env.AI, byId.get(imageId)!)));
+
   let supplierName: string | null = null;
   let invoiceNo: string | null = null;
   let day: string | null = null;
@@ -483,38 +528,24 @@ receiving.post('/slips/:id/recognize', async (c) => {
   const lines: DraftLine[] = [];
   let failedCount = 0;
   let lastError = '';
-  for (const imageId of imageIds) {
-    const row = byId.get(imageId)!;
-    const bytes = row.bytes instanceof ArrayBuffer ? new Uint8Array(row.bytes) : new Uint8Array(row.bytes as number[]);
-    try {
-      const result = await c.env.AI.run(VISION_MODEL, {
-        messages: [
-          {
-            role: 'user',
-            content: [
-              { type: 'text', text: RECOGNIZE_PROMPT },
-              { type: 'image_url', image_url: { url: toDataUrl(bytes, row.mime) } },
-            ],
-          },
-        ],
-        max_tokens: 2048,
-      });
-      const parsed = extractJson(textOf(result)) as Record<string, unknown>;
-      // 单据分几张拍时，编号和汇总栏只会出现在其中一张上，所以取第一个认出来的
-      if (!supplierName) supplierName = asTextOrNull(parsed.supplierName);
-      if (!invoiceNo) invoiceNo = asTextOrNull(parsed.invoiceNo);
-      if (!day) day = optionalDay(parsed.day);
-      if (netAmount === null) netAmount = asNumberOrNull(parsed.netAmount);
-      if (taxAmount === null) taxAmount = asNumberOrNull(parsed.taxAmount);
-      if (grossAmount === null) grossAmount = asNumberOrNull(parsed.grossAmount);
-      lines.push(...toDraftLines(parsed.lines));
-    } catch (err) {
+  imageIds.forEach((imageId, i) => {
+    const { parsed, error } = outcomes[i]!;
+    if (error !== null || parsed === null) {
       failedCount++;
+      lastError = error ?? '';
       // 全靠"AI 识别暂时不可用"这一句排查过一次，什么都查不出来，所以把真实原因留在日志里
-      lastError = err instanceof Error ? err.message : String(err);
       console.error('recognize failed', { slipId: id, imageId, error: lastError });
+      return;
     }
-  }
+    // 单据分几张拍时，编号和汇总栏只会出现在其中一张上，所以取第一个认出来的
+    if (!supplierName) supplierName = asTextOrNull(parsed.supplierName);
+    if (!invoiceNo) invoiceNo = asTextOrNull(parsed.invoiceNo);
+    if (!day) day = optionalDay(parsed.day);
+    if (netAmount === null) netAmount = asNumberOrNull(parsed.netAmount);
+    if (taxAmount === null) taxAmount = asNumberOrNull(parsed.taxAmount);
+    if (grossAmount === null) grossAmount = asNumberOrNull(parsed.grossAmount);
+    lines.push(...toDraftLines(parsed.lines));
+  });
 
   if (failedCount === imageIds.length) {
     throw new ApiError(502, `AI 识别暂时不可用（${lastError.slice(0, 120)}），请重试一次或手动填写`);
